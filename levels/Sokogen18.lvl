@@ -1,0 +1,23 @@
+#domain
+hospital
+#levelname
+New level
+#colors
+blue: B,0
+#initial
++++++++
++  ++++
++   +++
++B B0++
++  +B +
++     +
++++++++
+#goal
++++++++
++  ++++
++   +++
++    ++
++B +  +
++  B B+
++++++++
+#end
