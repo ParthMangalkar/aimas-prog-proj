@@ -1,0 +1,24 @@
+#domain
+hospital
+#levelname
+VUP_3
+#colors
+red: 0,A
+blue: 1,B
+green: 2,C
+yellow: 3,D
+#initial
++++++++++++++++++++++
++0 A D 3+
++ +
++1 B C 2+
++ +
++++++++++++++++++++++
+#goal
++++++++++++++++++++++
++ A +
++ D +
++ B +
++ C +
++++++++++++++++++++++
+#end

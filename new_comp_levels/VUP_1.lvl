@@ -1,0 +1,20 @@
+#domain
+hospital
+#levelname
+VUP_1
+#colors
+red: 0,A
+blue: 1,B
+#initial
++++++++++++++
++0 A   B  1+
++           +
++           +
++++++++++++++
+#goal
++++++++++++++
++     A     +
++           +
++     B     +
++++++++++++++
+#end
