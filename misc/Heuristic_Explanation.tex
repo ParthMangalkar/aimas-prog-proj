@@ -1,0 +1,394 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\geometry{margin=2.5cm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\textit{Heuristic Design for Multi-Agent Pathfinding}}
+\lhead{\textit{Search Client}}
+\cfoot{\thepage}
+
+\titleformat{\section}{\Large\bfseries\color{blue!70!black}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue!50!black}}{\thesubsection}{1em}{}
+
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{definitionbox}[1][]{
+    colback=blue!5!white,
+    colframe=blue!60!black,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+\newtcolorbox{propertybox}[1][]{
+    colback=green!5!white,
+    colframe=green!50!black,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+\newtcolorbox{warningbox}[1][]{
+    colback=red!5!white,
+    colframe=red!60!black,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+\title{
+    \vspace{-1cm}
+    {\LARGE\bfseries Heuristic Function Design}\\[0.3cm]
+    {\Large\color{gray} BFS-Precomputed Shortest-Path Heuristic\\with Agent-to-Box Distance for Push/Pull Domains}
+}
+\author{Search Client -- AI Planning \& Search}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the design, formal definition, implementation, and analysis of an improved heuristic function for informed search (A*, Weighted A*, Greedy Best-First) in the Hospital domain. The heuristic uses \textbf{precomputed BFS distances} from goal cells and an \textbf{agent-to-nearest-unplaced-box} component to provide wall-aware, admissible guidance. We compare it against simpler alternatives and discuss its strengths and weaknesses.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{Problem Setting}
+%----------------------------------------------------------------------
+
+We consider the \emph{Hospital} domain, where:
+\begin{itemize}[leftmargin=1.5em]
+    \item A grid-based level contains \textbf{walls}, \textbf{agents} (digits \texttt{0}--\texttt{9}), and \textbf{boxes} (letters \texttt{A}--\texttt{Z}).
+    \item Each agent and box has a \textbf{color}. An agent can only push or pull boxes of its own color.
+    \item \textbf{Goal cells} specify where certain boxes or agents must be placed.
+    \item Agents can perform \textbf{Move}, \textbf{Push}, and \textbf{Pull} actions.
+    \item The objective is to find a sequence of joint actions that satisfies all goal conditions.
+\end{itemize}
+
+A \textbf{state} $s$ consists of:
+\begin{itemize}[leftmargin=1.5em]
+    \item Agent positions: $\text{agentRow}[a], \text{agentCol}[a]$ for each agent $a$.
+    \item Box positions: $\text{boxes}[r][c]$ giving the box letter at cell $(r,c)$, or $\varnothing$ if empty.
+    \item The path cost $g(s)$: the number of time steps taken to reach $s$ from the initial state.
+\end{itemize}
+
+The static level information (walls, goal cells, colors) does not change between states.
+
+%----------------------------------------------------------------------
+\section{Heuristic Candidates Considered}
+%----------------------------------------------------------------------
+
+We evaluated five candidate heuristics before selecting our design.
+
+\subsection{Option 1: Goal Count (Baseline)}
+
+\begin{definitionbox}[Goal Count Heuristic]
+\[
+    h_1(s) = \sum_{(r,c) \in G} \mathbb{1}\bigl[\text{goal } (r,c) \text{ is not satisfied in } s\bigr]
+\]
+\end{definitionbox}
+
+\begin{itemize}
+    \item \textbf{Admissible:} Yes --- each unsatisfied goal requires at least one action.
+    \item \textbf{Weakness:} Gives no distance information. A box 1 step from its goal and a box 50 steps away both contribute $+1$. Provides almost no search guidance beyond uninformed search.
+\end{itemize}
+
+\subsection{Option 2: Manhattan Distance}
+
+\begin{definitionbox}[Manhattan Distance Heuristic]
+\[
+    h_2(s) = \sum_{g \in G_{\text{box}}} \min_{\substack{b \in B_s \\ \text{type}(b)=\text{type}(g)}} \bigl(|r_b - r_g| + |c_b - c_g|\bigr)
+    \;+\; \sum_{g \in G_{\text{agent}}} \bigl(|r_{a_g} - r_g| + |c_{a_g} - c_g|\bigr)
+\]
+\end{definitionbox}
+
+\begin{itemize}
+    \item \textbf{Admissible:} Yes --- Manhattan distance is a lower bound on true shortest path.
+    \item \textbf{Weakness:} \textbf{Ignores walls entirely.} In maze-like levels, Manhattan distance wildly underestimates the true distance, leading to poor guidance. A box might be 3 cells away in Manhattan distance but 40 steps away through the maze.
+\end{itemize}
+
+\subsection{Option 3: Precomputed BFS Distance}
+
+\begin{definitionbox}[BFS Distance Heuristic]
+\[
+    h_3(s) = \sum_{g \in G_{\text{box}}} \min_{\substack{b \in B_s \\ \text{type}(b)=\text{type}(g)}} d^*(b, g)
+    \;+\; \sum_{g \in G_{\text{agent}}} d^*(a_g, g)
+\]
+where $d^*(p,q)$ is the true shortest-path distance from $p$ to $q$ respecting walls (ignoring dynamic obstacles), precomputed via BFS.
+\end{definitionbox}
+
+\begin{itemize}
+    \item \textbf{Admissible:} Yes --- true shortest path (ignoring boxes) $\leq$ actual cost.
+    \item \textbf{Strength:} Wall-aware; excellent on mazes.
+    \item \textbf{Weakness:} Does not account for the agent needing to walk to a box before pushing it.
+\end{itemize}
+
+\subsection{Option 4: BFS Distance + Agent-to-Box (Selected)}
+
+This is the heuristic we implemented. See Section~\ref{sec:formal} for the full definition.
+
+\subsection{Option 5: Hungarian Algorithm Matching}
+
+\begin{definitionbox}[Hungarian Matching Heuristic]
+Uses optimal min-cost bipartite matching between boxes and goals of the same type, where edge costs are $d^*(b,g)$.
+\end{definitionbox}
+
+\begin{itemize}
+    \item \textbf{Admissible:} Yes.
+    \item \textbf{Strength:} Tightest admissible bound --- avoids double-counting boxes.
+    \item \textbf{Weakness:} $O(n^3)$ per box type per state evaluation. Too expensive for large levels with many boxes.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Summary Comparison}
+%----------------------------------------------------------------------
+
+\begin{table}[h!]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{\#} & \textbf{Heuristic} & \textbf{Admissible} & \textbf{Wall-Aware} & \textbf{Eval Cost} & \textbf{Quality} \\
+\midrule
+1 & Goal Count         & \checkmark & \texttimes & $O(RC)$   & Very Low  \\
+2 & Manhattan Distance & \checkmark & \texttimes & $O(RC)$   & Low       \\
+3 & BFS Distance       & \checkmark & \checkmark & $O(|G| \cdot RC)$ & High \\
+4 & BFS + Agent-to-Box & \checkmark & \checkmark & $O(|G| \cdot RC)$ & \textbf{Very High} \\
+5 & Hungarian Matching & \checkmark & \checkmark & $O(n^3)$  & Highest   \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of heuristic candidates. $R, C$ = grid dimensions, $|G|$ = number of goals, $n$ = max boxes of one type. Option~4 was selected as the best trade-off.}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Formal Heuristic Definition}\label{sec:formal}
+%----------------------------------------------------------------------
+
+\begin{definitionbox}[Selected Heuristic: BFS Distance + Agent-to-Box]
+Let $s$ be a state. Define:
+\begin{itemize}[leftmargin=1.5em]
+    \item $G_{\text{box}}$: the set of goal cells with box goals (\texttt{A}--\texttt{Z}).
+    \item $G_{\text{agent}}$: the set of goal cells with agent goals (\texttt{0}--\texttt{9}).
+    \item $B_s$: the set of boxes in state $s$, with $\text{type}(b)$ being the letter and $\text{pos}(b)$ the position.
+    \item $B_s^{\text{unplaced}}$: boxes not currently at a matching goal cell.
+    \item $d^*(p, q)$: the shortest-path distance from cell $p$ to cell $q$ through free (non-wall) cells, precomputed via BFS from each goal cell.
+    \item $\text{color}(x)$: the color of agent or box $x$.
+\end{itemize}
+
+\vspace{0.5em}
+The heuristic is:
+\[
+\boxed{
+    h(s) = \underbrace{\sum_{g \in G_{\text{box}}} \min_{\substack{b \in B_s \\ \text{type}(b) = \text{type}(g)}} d^*(b, g)}_{\text{(I) Box-to-goal distances}}
+    \;+\; \underbrace{\sum_{g \in G_{\text{agent}}} d^*(a_g, g)}_{\text{(II) Agent-to-agent-goal}}
+    \;+\; \underbrace{\sum_{a \in A} \min_{\substack{b \in B_s^{\text{unplaced}} \\ \text{color}(b) = \text{color}(a)}} \text{manhattan}(a, b)}_{\text{(III) Agent-to-nearest-unplaced-box}}
+}
+\]
+
+\vspace{0.3em}
+where component (III) is $0$ if agent $a$ has no unplaced boxes of its color.
+\end{definitionbox}
+
+%----------------------------------------------------------------------
+\section{Admissibility Proof}
+%----------------------------------------------------------------------
+
+\begin{propertybox}[Theorem: $h(s)$ is admissible]
+$h(s) \leq h^*(s)$ for all states $s$, where $h^*(s)$ is the true optimal cost to reach a goal state from $s$.
+\end{propertybox}
+
+\begin{proof}
+We show each of the three components is a lower bound on part of the true cost.
+
+\textbf{Component (I):} Each box goal $g$ must be satisfied by some box $b$ of matching type. The box must be moved from its current position to $g$. Moving a box one cell requires at least one action, so the cost is at least $d^*(b, g)$ (the shortest path ignoring other boxes). Taking the minimum over matching boxes gives a lower bound for each goal. Since goals must all be satisfied, the sum is a lower bound.
+
+\textbf{Component (II):} Each agent goal requires the agent to be at a specific cell. The agent must take at least $d^*(a_g, g)$ steps to reach it (the shortest wall-respecting path).
+
+\textbf{Component (III):} If agent $a$ has unplaced boxes of its color, it must reach at least one of them to push/pull it. The Manhattan distance to the nearest such box is a lower bound on the steps needed. (Manhattan $\leq$ true shortest path.)
+
+Since the three components measure non-overlapping cost contributions (box movement, agent-goal movement, and agent travel to reach boxes), their sum is also a lower bound:
+\[
+    h(s) = \text{(I)} + \text{(II)} + \text{(III)} \;\leq\; h^*(s). \qedhere
+\]
+\end{proof}
+
+%----------------------------------------------------------------------
+\section{Preprocessing: BFS from Goal Cells}
+%----------------------------------------------------------------------
+
+\subsection{Algorithm}
+
+During construction of the heuristic (before search begins), we precompute shortest-path distances from each goal cell to every reachable cell in the grid.
+
+\begin{algorithm}[H]
+\caption{Preprocessing: BFS from Goal Cells}
+\begin{algorithmic}[1]
+\Procedure{Preprocess}{$\text{goals}[][], \text{walls}[][]$}
+    \State $\mathcal{G} \gets$ all cells $(r,c)$ where $\text{goals}[r][c] \neq \varnothing$
+    \For{each goal cell $g_i = (r_i, c_i) \in \mathcal{G}$}
+        \State $\text{dist}[i][r][c] \gets \infty \;\;\forall\; (r,c)$
+        \State $\text{dist}[i][r_i][c_i] \gets 0$
+        \State $Q \gets \text{empty queue}$
+        \State $Q.\text{enqueue}((r_i, c_i))$
+        \While{$Q$ is not empty}
+            \State $(r, c) \gets Q.\text{dequeue}()$
+            \For{each neighbor $(r', c')$ of $(r, c)$}
+                \If{$(r', c')$ is in bounds \textbf{and} not a wall \textbf{and} $\text{dist}[i][r'][c'] = \infty$}
+                    \State $\text{dist}[i][r'][c'] \gets \text{dist}[i][r][c] + 1$
+                    \State $Q.\text{enqueue}((r', c'))$
+                \EndIf
+            \EndFor
+        \EndWhile
+    \EndFor
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Complexity}
+
+\begin{itemize}
+    \item \textbf{Time:} $O(|G| \cdot R \cdot C)$ where $|G|$ is the number of goal cells (typically 5--20).
+    \item \textbf{Space:} $O(|G| \cdot R \cdot C)$ for the distance tables.
+    \item \textbf{Lookup:} $O(1)$ per goal at evaluation time.
+\end{itemize}
+
+This is \emph{far} more efficient than precomputing all-pairs BFS, which would cost $O(R^2 C^2)$ time and space.
+
+%----------------------------------------------------------------------
+\section{Heuristic Evaluation}
+%----------------------------------------------------------------------
+
+\begin{algorithm}[H]
+\caption{Heuristic Evaluation $h(s)$}
+\begin{algorithmic}[1]
+\Procedure{h}{state $s$}
+    \State $\text{total} \gets 0$
+    \Statex
+    \Comment{\textbf{Component I: Box goals}}
+    \For{each goal $g_i$ with type $\in$ \{\texttt{A}...\texttt{Z}\}}
+        \If{$s.\text{boxes}[r_i][c_i] = \text{type}(g_i)$}
+            \State \textbf{continue} \Comment{Goal already satisfied}
+        \EndIf
+        \State $\text{minDist} \gets \infty$
+        \For{each cell $(r, c)$ where $s.\text{boxes}[r][c] = \text{type}(g_i)$}
+            \State $\text{minDist} \gets \min(\text{minDist},\; \text{dist}[i][r][c])$
+        \EndFor
+        \State $\text{total} \gets \text{total} + \text{minDist}$
+    \EndFor
+    \Statex
+    \Comment{\textbf{Component II: Agent goals}}
+    \For{each goal $g_i$ with type $\in$ \{\texttt{0}...\texttt{9}\}}
+        \State $a \gets \text{type}(g_i) - \texttt{'0'}$
+        \If{agent $a$ is at $(r_i, c_i)$}
+            \State \textbf{continue}
+        \EndIf
+        \State $\text{total} \gets \text{total} + \text{dist}[i][s.\text{agentRow}[a]][s.\text{agentCol}[a]]$
+    \EndFor
+    \Statex
+    \Comment{\textbf{Component III: Agent-to-nearest-unplaced-box}}
+    \For{each agent $a$}
+        \State $\text{minBoxDist} \gets \infty$
+        \For{each box $b$ at $(r, c)$ with $\text{color}(b) = \text{color}(a)$}
+            \If{$\text{goals}[r][c] \neq \text{type}(b)$} \Comment{Box is unplaced}
+                \State $\text{minBoxDist} \gets \min(\text{minBoxDist},\; |r_a - r| + |c_a - c|)$
+            \EndIf
+        \EndFor
+        \If{$\text{minBoxDist} < \infty$}
+            \State $\text{total} \gets \text{total} + \text{minBoxDist}$
+        \EndIf
+    \EndFor
+    \Statex
+    \State \Return $\text{total}$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+%----------------------------------------------------------------------
+\section{Strengths and Weaknesses}
+%----------------------------------------------------------------------
+
+\begin{propertybox}[Strengths]
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Wall-aware:} Unlike Manhattan distance, BFS distances account for walls and corridors. This gives dramatically better guidance on maze-like levels.
+    \item \textbf{Constant-time lookup:} After $O(|G| \cdot RC)$ preprocessing, each goal distance is retrieved in $O(1)$.
+    \item \textbf{Admissible:} Guarantees optimality when used with A*.
+    \item \textbf{Handles both goal types:} Works correctly with box goals (\texttt{A}--\texttt{Z}) and agent goals (\texttt{0}--\texttt{9}).
+    \item \textbf{Push/pull aware:} The agent-to-box component reflects that agents must physically reach boxes before moving them.
+    \item \textbf{Color-aware:} Only considers boxes an agent can actually manipulate (same color).
+    \item \textbf{Efficient preprocessing:} Only runs BFS from goal cells (typically 5--20), not from all free cells.
+\end{enumerate}
+\end{propertybox}
+
+\begin{warningbox}[Weaknesses]
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Ignores box-box interactions:} Boxes can block each other's paths. The heuristic computes distances as if boxes don't exist, so it may underestimate when boxes create deadlocks or require complex rearrangement.
+    \item \textbf{Greedy matching:} Each goal greedily picks the nearest matching box. If two goals of the same type compete for the same box, the heuristic may undercount (the same box is ``assigned'' to both goals). The Hungarian algorithm would fix this but at $O(n^3)$ cost.
+    \item \textbf{Agent-to-box uses Manhattan:} Component~(III) uses Manhattan distance rather than BFS distance for the agent-to-box estimate. This keeps evaluation fast but is less accurate on mazes. A refinement would precompute BFS from agent positions, but these change every state.
+    \item \textbf{No deadlock detection:} Does not detect unsolvable configurations (e.g., a box pushed into a corner with no matching goal).
+\end{enumerate}
+\end{warningbox}
+
+%----------------------------------------------------------------------
+\section{Search Algorithms Using This Heuristic}
+%----------------------------------------------------------------------
+
+The heuristic $h(s)$ is combined with the path cost $g(s)$ differently depending on the search strategy:
+
+\begin{table}[h!]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Strategy} & \textbf{Evaluation Function} & \textbf{Properties} \\
+\midrule
+A*               & $f(s) = g(s) + h(s)$        & Optimal, complete \\
+Weighted A* ($w$) & $f(s) = g(s) + w \cdot h(s)$ & Bounded suboptimal ($\leq w \cdot$ optimal) \\
+Greedy Best-First & $f(s) = h(s)$               & Fast but not optimal \\
+\bottomrule
+\end{tabular}
+\caption{Search strategies and their evaluation functions.}
+\end{table}
+
+As noted in the assignment, \textbf{Greedy Best-First Search} is recommended for benchmarking, since it typically shows the largest improvement from a better heuristic compared to uninformed search.
+
+%----------------------------------------------------------------------
+\section{Conclusion}
+%----------------------------------------------------------------------
+
+The BFS-precomputed heuristic with agent-to-box distance provides an excellent balance between:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Accuracy:} Wall-aware distances give tight lower bounds.
+    \item \textbf{Speed:} One-time preprocessing; constant-time lookups during search.
+    \item \textbf{Generality:} Handles single-agent, multi-agent, box goals, and agent goals.
+    \item \textbf{Correctness:} Provably admissible for optimal search.
+\end{itemize}
+
+Further improvements could include Hungarian matching for same-type box-goal assignments, BFS-based agent-to-box distances, or simple deadlock detection to prune unsolvable states.
+
+\end{document}
