@@ -81,9 +81,3 @@ __pycache__/
 
 # other misc files
 other_misc/
-complevels/
-levels/
-new_comp_levels/
-benchmarks/
-misc/
-direct-tests/
