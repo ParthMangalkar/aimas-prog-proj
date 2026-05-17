@@ -1,0 +1,17 @@
+#domain
+hospital
+#levelname
+TestExtraColor
+#colors
+blue: 0, A
+red: 1, B
+green: 2
+#initial
++++++
++0A +
++++++
+#goal
++++++
++  A+
++++++
+#end

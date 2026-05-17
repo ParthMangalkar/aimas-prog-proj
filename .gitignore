@@ -67,3 +67,23 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# cache files
+*.cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files
+.idea/
+.vscode/
+
+# other misc files
+other_misc/
+complevels/
+levels/
+new_comp_levels/
+benchmarks/
+misc/
+direct-tests/
