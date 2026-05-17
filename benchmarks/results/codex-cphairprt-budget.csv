@@ -1,0 +1,2 @@
+"level","algorithm","solved","timeout","exceeded_joint_action_limit","solution_length","client_solution_length","expanded","frontier","generated","search_seconds","wall_seconds","memory_mb","exit_code","log"
+"complevels\CphAirprt.lvl","-prioritized","False","False","False",,,,,,,"38.424",,"0","benchmarks\results\codex-cphairprt-budget-logs\complevels_CphAirprt.lvl__-prioritized.log"

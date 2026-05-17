@@ -1,0 +1,6 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/AIMAS7.lvl,-prioritized,True,False,False,solved,55,55,,,,,2.307331,0,benchmarks/results/baseline-darwin-smoke-logs/complevels_AIMAS7.lvl__-prioritized.log
+complevels/AMC.lvl,-prioritized,True,False,False,solved,335,335,,,,,13.363169,0,benchmarks/results/baseline-darwin-smoke-logs/complevels_AMC.lvl__-prioritized.log
+complevels/BigSplit.lvl,-prioritized,False,True,False,timeout,,,,,,,60.089168,0,benchmarks/results/baseline-darwin-smoke-logs/complevels_BigSplit.lvl__-prioritized.log
+complevels/Ccropper.lvl,-prioritized,True,False,False,solved,25,25,,,,,0.087707,0,benchmarks/results/baseline-darwin-smoke-logs/complevels_Ccropper.lvl__-prioritized.log
+complevels/ClosedAI.lvl,-prioritized,False,True,False,timeout,,,,,,,60.128086,0,benchmarks/results/baseline-darwin-smoke-logs/complevels_ClosedAI.lvl__-prioritized.log

@@ -1,0 +1,4 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/EpicfAIl.lvl,-prioritized,True,False,False,solved,112,112,770,42910,43680,1.623,1.716423,0,benchmarks/results/p5-swap-logs/complevels_EpicfAIl.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,False,False,deliver_box_failed,,,14999,118505,133504,16.256,16.362185,0,benchmarks/results/p5-swap-logs/complevels_ZOOM.lvl__-prioritized.log
+complevels/pacMAn.lvl,-prioritized,False,False,False,deliver_box_failed,,,7999,93773,101772,17.465,17.635856,0,benchmarks/results/p5-swap-logs/complevels_pacMAn.lvl__-prioritized.log

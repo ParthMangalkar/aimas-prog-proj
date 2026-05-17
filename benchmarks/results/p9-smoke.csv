@@ -1,0 +1,11 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/AIMAS7.lvl,-prioritized,True,False,False,solved,55,55,,,,,2.546729,0,benchmarks/results/p9-smoke-logs/complevels_AIMAS7.lvl__-prioritized.log
+complevels/AMC.lvl,-prioritized,True,False,False,solved,335,335,,,,,14.954907,0,benchmarks/results/p9-smoke-logs/complevels_AMC.lvl__-prioritized.log
+complevels/Ccropper.lvl,-prioritized,True,False,False,solved,25,25,,,,,0.074438,0,benchmarks/results/p9-smoke-logs/complevels_Ccropper.lvl__-prioritized.log
+complevels/GHandDirt.lvl,-prioritized,True,False,False,solved,56,56,,,,,0.096130,0,benchmarks/results/p9-smoke-logs/complevels_GHandDirt.lvl__-prioritized.log
+complevels/MAchoupo2.lvl,-prioritized,True,False,False,solved,31,31,,,,,0.072298,0,benchmarks/results/p9-smoke-logs/complevels_MAchoupo2.lvl__-prioritized.log
+complevels/crayCray.lvl,-prioritized,True,False,False,solved,61,61,,,,,0.080890,0,benchmarks/results/p9-smoke-logs/complevels_crayCray.lvl__-prioritized.log
+complevels/warehouse.lvl,-prioritized,True,False,False,solved,86,86,,,,,0.398913,0,benchmarks/results/p9-smoke-logs/complevels_warehouse.lvl__-prioritized.log
+levels/BFSfriendly0.lvl,-prioritized,True,False,False,solved,2,2,,,,,0.070898,0,benchmarks/results/p9-smoke-logs/levels_BFSfriendly0.lvl__-prioritized.log
+levels/BFSfriendly2.lvl,-prioritized,True,False,False,solved,2,2,,,,,0.070496,0,benchmarks/results/p9-smoke-logs/levels_BFSfriendly2.lvl__-prioritized.log
+levels/MAExample.lvl,-prioritized,True,False,False,solved,30,30,,,,,0.078199,0,benchmarks/results/p9-smoke-logs/levels_MAExample.lvl__-prioritized.log

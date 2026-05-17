@@ -1,0 +1,4 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,deliver_box_failed,,,999,3172454,3173453,98.691,100.168493,0,benchmarks/results/p6-relocation-focus-logs/complevels_DatzCrazy.lvl__-prioritized.log
+complevels/help.lvl,-prioritized,False,False,False,deliver_box_failed,,,24999,186225,211224,34.986,35.126307,0,benchmarks/results/p6-relocation-focus-logs/complevels_help.lvl__-prioritized.log
+complevels/warehouse.lvl,-prioritized,True,False,False,solved,86,86,,,,,0.377008,0,benchmarks/results/p6-relocation-focus-logs/complevels_warehouse.lvl__-prioritized.log

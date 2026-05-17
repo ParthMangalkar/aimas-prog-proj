@@ -1,0 +1,6 @@
+"level","algorithm","solved","timeout","exceeded_joint_action_limit","solution_length","expanded","frontier","generated","search_seconds","wall_seconds","memory_mb","exit_code","log"
+"new_comp_levels\VUP_1.lvl","-prioritized","True","False","False","5",,,,,"0.241",,"0","benchmarks\results\new-comp-5-prioritized-logs\new_comp_levels_VUP_1.lvl__-prioritized.log"
+"new_comp_levels\VUP_2.lvl","-prioritized","True","False","False","10",,,,,"0.039",,"0","benchmarks\results\new-comp-5-prioritized-logs\new_comp_levels_VUP_2.lvl__-prioritized.log"
+"new_comp_levels\VUP_3.lvl","-prioritized","True","False","False","2",,,,,"0.03",,"0","benchmarks\results\new-comp-5-prioritized-logs\new_comp_levels_VUP_3.lvl__-prioritized.log"
+"new_comp_levels\VUP_4.lvl","-prioritized","True","False","False","3",,,,,"0.029",,"0","benchmarks\results\new-comp-5-prioritized-logs\new_comp_levels_VUP_4.lvl__-prioritized.log"
+"new_comp_levels\VUP_5.lvl","-prioritized","True","False","False","2",,,,,"0.032",,"0","benchmarks\results\new-comp-5-prioritized-logs\new_comp_levels_VUP_5.lvl__-prioritized.log"

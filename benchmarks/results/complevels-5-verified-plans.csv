@@ -1,0 +1,6 @@
+"level","algorithm","solved","timeout","exceeded_joint_action_limit","solution_length","client_solution_length","expanded","frontier","generated","search_seconds","wall_seconds","memory_mb","exit_code","log"
+"complevels\AIMAS7.lvl","-prioritized","True","False","False","55","55",,,,,"16.957",,"0","benchmarks\results\complevels-5-verified-plans-logs\complevels_AIMAS7.lvl__-prioritized.log"
+"complevels\AMC.lvl","-prioritized","False","False","False",,,,,,,"13.042",,"0","benchmarks\results\complevels-5-verified-plans-logs\complevels_AMC.lvl__-prioritized.log"
+"complevels\BigSplit.lvl","-prioritized","False","False","False",,,,,,,"71.552",,"0","benchmarks\results\complevels-5-verified-plans-logs\complevels_BigSplit.lvl__-prioritized.log"
+"complevels\Ccropper.lvl","-prioritized","True","False","False","25","25",,,,,"0.032",,"0","benchmarks\results\complevels-5-verified-plans-logs\complevels_Ccropper.lvl__-prioritized.log"
+"complevels\ClosedAI.lvl","-prioritized","False","False","False",,,,,,,"66.619",,"0","benchmarks\results\complevels-5-verified-plans-logs\complevels_ClosedAI.lvl__-prioritized.log"

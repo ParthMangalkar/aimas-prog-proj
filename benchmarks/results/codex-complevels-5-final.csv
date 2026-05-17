@@ -1,0 +1,6 @@
+"level","algorithm","solved","timeout","exceeded_joint_action_limit","solution_length","client_solution_length","expanded","frontier","generated","search_seconds","wall_seconds","memory_mb","exit_code","log"
+"complevels\AIMAS7.lvl","-prioritized","True","False","False","55","55",,,,,"6.724",,"0","benchmarks\results\codex-complevels-5-final-logs\complevels_AIMAS7.lvl__-prioritized.log"
+"complevels\AMC.lvl","-prioritized","False","False","False",,,,,,,"34.568",,"0","benchmarks\results\codex-complevels-5-final-logs\complevels_AMC.lvl__-prioritized.log"
+"complevels\BigSplit.lvl","-prioritized","False","False","False",,,,,,,"40.266",,"0","benchmarks\results\codex-complevels-5-final-logs\complevels_BigSplit.lvl__-prioritized.log"
+"complevels\Ccropper.lvl","-prioritized","True","False","False","25","25",,,,,"0.042",,"0","benchmarks\results\codex-complevels-5-final-logs\complevels_Ccropper.lvl__-prioritized.log"
+"complevels\ClosedAI.lvl","-prioritized","False","False","False",,,,,,,"27.119",,"0","benchmarks\results\codex-complevels-5-final-logs\complevels_ClosedAI.lvl__-prioritized.log"

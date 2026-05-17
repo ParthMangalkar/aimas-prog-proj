@@ -1,0 +1,4 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,deliver_box_failed,,,999,3172454,3173453,96.479,98.516635,0,benchmarks/results/p8-branchguard-relocation-logs/complevels_DatzCrazy.lvl__-prioritized.log
+complevels/help.lvl,-prioritized,False,False,False,deliver_box_failed,,,24999,186225,211224,34.689,34.830405,0,benchmarks/results/p8-branchguard-relocation-logs/complevels_help.lvl__-prioritized.log
+complevels/warehouse.lvl,-prioritized,True,False,False,solved,86,86,,,,,0.358297,0,benchmarks/results/p8-branchguard-relocation-logs/complevels_warehouse.lvl__-prioritized.log

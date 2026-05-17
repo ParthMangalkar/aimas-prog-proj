@@ -1,0 +1,57 @@
+client,level,algorithm,solved,timeout,solution_length,expanded,frontier,generated,search_seconds,wall_seconds,exit_code
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,11,2,13,0.002,0.09,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,11,2,13,0,0.015,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,18,18,2,20,0.003,0.101,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,18,18,2,20,0,0.012,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,6,2,8,0.002,0.103,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,6,2,8,0,0.012,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,-wastar 5,TRUE,FALSE,6,6,2,8,0.002,0.109,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,-wastar 5,TRUE,FALSE,6,6,2,8,0,0.013,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,6,2,8,0.001,0.117,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,6,2,8,0,0.013,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,10,2,12,0.002,0.097,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,10,2,12,0,0.013,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,11,2,13,0.002,0.116,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple1.lvl,#NAME?,TRUE,FALSE,6,11,2,13,0,0.012,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,8805,2393,11198,0.077,0.186,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,8805,2393,11198,0.024,0.04,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,12296,22614,5935,28549,0.119,0.305,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,12296,22614,5935,28549,0.061,0.084,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,150,93,243,0.009,0.126,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,150,93,243,0.001,0.015,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,-wastar 5,TRUE,FALSE,46,2069,793,2862,0.051,0.151,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,-wastar 5,TRUE,FALSE,46,2069,793,2862,0.025,0.038,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,69,1908,695,2603,0.073,0.176,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,69,1908,695,2603,0.019,0.032,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,503,44,547,0.009,0.106,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,503,44,547,0.001,0.014,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,4104,1224,5328,0.064,0.182,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\SAsimple2.lvl,#NAME?,TRUE,FALSE,30,4104,1224,5328,0.012,0.026,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,8295,2977,11272,0.115,0.224,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,8295,2977,11272,0.048,0.065,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,44669,110704,123182,233886,0.625,1.006,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,44669,110704,123182,233886,0.776,1.198,-1073741571
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,602,404,1006,0.031,0.16,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,602,404,1006,0.008,0.022,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,-wastar 5,TRUE,FALSE,37,452,295,747,0.027,0.137,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,-wastar 5,TRUE,FALSE,37,452,295,747,0.006,0.02,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,71,353,247,600,0.022,0.14,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,71,353,247,600,0.004,0.017,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,60,273,271,544,0.011,0.115,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,60,273,271,544,0.002,0.014,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,5197,1563,6760,0.094,0.197,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAExample.lvl,#NAME?,TRUE,FALSE,30,5197,1563,6760,0.03,0.044,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,52690,22797,75487,0.687,0.776,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,52690,22797,75487,0.993,1.06,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,1653,1679,13771,15450,0.092,0.239,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,1653,1679,13771,15450,0.03,0.051,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,41,324,365,0.012,0.115,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,41,324,365,0.002,0.014,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,-wastar 5,TRUE,FALSE,17,18,236,254,0.01,0.122,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,-wastar 5,TRUE,FALSE,17,18,236,254,0.001,0.017,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,18,236,254,0.008,0.1,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,18,236,254,0.001,0.015,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,88,586,1450,2036,0.031,0.154,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,88,586,1450,2036,0.008,0.021,0
+java,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,27418,15344,42762,0.485,0.576,0
+cpp,C:\Users\Lenovo\Desktop\semester-2\MAS\new_cpp\aimas-warmup-assignment\levels\MAsimple1.lvl,#NAME?,TRUE,FALSE,17,27418,15344,42762,0.576,0.617,0

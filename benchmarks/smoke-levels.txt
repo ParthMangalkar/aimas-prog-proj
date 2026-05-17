@@ -1,0 +1,12 @@
+# Fast regression smoke set for Darwin/Linux benchmark runs.
+# Mixes tiny sample levels with representative solved competition levels.
+levels/BFSfriendly0.lvl
+levels/BFSfriendly2.lvl
+levels/MAExample.lvl
+complevels/AIMAS7.lvl
+complevels/AMC.lvl
+complevels/Ccropper.lvl
+complevels/crayCray.lvl
+complevels/GHandDirt.lvl
+complevels/MAchoupo2.lvl
+complevels/warehouse.lvl
