@@ -81,3 +81,9 @@ __pycache__/
 
 # other misc files
 other_misc/
+
+# macOS metadata
+.DS_Store
+
+# IntelliJ build output
+misc/out/
