@@ -1,501 +1,406 @@
-# Current C++ SearchClient Architecture
+# Architecture — `searchclient_cpp_v2`
 
-This document describes the active implementation in `searchclient_cpp/searchclient_cpp/main.cpp` and the algorithms currently available through the compiled C++ client.
+This document describes the current architecture of the production solver
+in this repository: `searchclient_cpp_v2`. It is the only active C++
+client; the previous monolithic implementations have been removed.
 
-## High-level summary
+> **Status (r19):** 73 / 116 levels solved (28 / 47 on `complevels`,
+> 45 / 69 on `complevels_2026`). Beats the legacy single-file solver
+> (62 / 116) by **+11** while shrinking from ~5 000 LOC in one file to
+> ~3 800 LOC across 14 focused modules with unit tests.
 
-The current client is a hybrid solver for the AIMAS hospital/Sokoban domain. It keeps the original global joint-state search algorithms, but the default path is now:
+---
 
-```text
-parse level
-  -> run a basic goal-feasibility gate
-  -> try prioritized multi-agent task planner
-     -> validate every complete candidate with local server-style replay
-     -> retry replay-invalid candidates with committed-world and/or relaxed reservations
-  -> if that fails, try serial task fallback
-  -> if AIMAS_ENABLE_CBS_REPLAN=1, try an experimental fixed-assignment CBS fallback
-  -> if that fails, try bounded weighted A* fallback in default and prioritized-only modes
-  -> if AIMAS_ENABLE_WINDOWED_REPLAN=1, try an experimental windowed full-joint fallback
-  -> if allowed, fall back to smart best-first graph search
-  -> emit one joint action per timestep to the server
-```
-
-The implementation is "hybrid" because it combines:
-
-1. Whole-state graph search over complete joint actions.
-2. Greedy task assignment for box goals.
-3. Single-agent Space-Time A* with reservation tables.
-4. An opt-in CBS constraint-tree coordinator over fixed per-agent assignments.
-5. Serial single-agent fallback planning with blocker eviction and box relocation.
-6. Smart heuristic best-first fallback search.
-
-## Active source layout
-
-| File or folder | Role |
-|---|---|
-| `searchclient_cpp/searchclient_cpp/main.cpp` | Active client implementation. It contains domain model, parser, global search, heuristics, prioritized planner, serial fallback, and protocol output. |
-| `searchclient_cpp/searchclient_cpp/CMakeLists.txt` | Builds the active `searchclient_cpp` executable and a compile-only `mapf_experiments` static target. |
-| `searchclient_cpp/searchclient_cpp/mapf/` | Separate MAPF experiment code. It is compile-checked as `mapf_experiments`, but not linked into the active client target. |
-| `misc/server.jar` | Current validation server used by the benchmark workflow. |
-| `searchclient_cpp/server_cpp/` | Legacy C++ server source. It currently has pre-existing conflict markers, so it is not the validation path. |
-| `benchmarks/run_all_levels.py` | Benchmark runner that executes the Java server/client workflow over level sets and records CSV/Markdown/log output. |
-| `benchmarks/check_solved_regressions.py` | Regression checker for solved-level benchmark CSVs. |
-| `benchmarks/triage_logs.py` | Helper for classifying failed benchmark logs. |
-| `other_misc/AGENT_HANDOFF.md` | Operational handoff and current improvement priorities. |
-| `other_misc/IMPLEMENTATION_CHANGES.md` | Detailed record of implementation changes. |
-
-Important: stale MAPF entry-point flags such as `-mapf`, `-ecbs`, `-alns`, and `-full` are not parsed by the active `main.cpp`. The MAPF sources are intentionally isolated in the `mapf_experiments` build target and do not affect the executable behavior.
-
-## Domain model
-
-The client models the server domain with these core types:
-
-| Type | Purpose |
-|---|---|
-| `Action` | One primitive action: `NoOp`, `Move`, `Push`, or `Pull`, with agent and box deltas. |
-| `State` | Full world state: agent positions, box grid, parent pointer, joint action, and path cost. Static level data such as colors, walls, and goals are stored as static members. |
-| `StatePtrHasher` / `StatePtrEqual` | Hashing/equality for duplicate detection in graph search. |
-| `Frontier` | Abstract search frontier interface used by BFS, DFS, and best-first search. |
-| `Heuristic` | Base heuristic clakss that precomputes BFS distance maps from every goal cell. |
-
-`State` is responsible for:
-
-- checking action applicability for each agent;
-- checking joint-action conflicts;
-- applying a joint action to produce the next state;
-- detecting goal states;
-- expanding all applicable non-conflicting joint actions;
-- extracting the final plan by walking parent pointers.
-
-## Input/output protocol
-
-At startup, the client writes the expected handshake:
+## 1. High-level pipeline
 
 ```text
-SearchClient
-#This is a comment.
+stdin (level file, DTU/AIMAS server format)
+       │
+       ▼
+┌───────────────────┐
+│  parse_level()    │  parser.cpp
+└─────────┬─────────┘
+          │ Level (immutable: walls, colors, goals, initial agent rows/cols, initial boxes)
+          ▼
+┌───────────────────┐
+│  Solver::solve()  │  solver.cpp
+│ ┌───────────────┐ │
+│ │ build_task_   │ │  DP-optimal assignment per letter (bitmask DP, ≤12 boxes)
+│ │   variants    │ │  + 4 goal-order × 5 final-order greedy variants
+│ └───────┬───────┘ │  → up to 25 distinct task orderings (deduped)
+│         ▼         │
+│ ┌───────────────┐ │
+│ │ for v in      │ │
+│ │   variants:   │ │  reset state, run solve_once(v), return first success
+│ │   solve_once  │ │
+│ └───────┬───────┘ │
+│         ▼         │
+│ ┌───────────────┐ │
+│ │ run_queue()   │ │   deliver_task → scatter → corridor-evac → defer
+│ │  + redelivery │ │   → relocation (no-on-goal then with-on-goal) → fail
+│ └───────┬───────┘ │
+│         ▼         │
+│ ┌───────────────┐ │
+│ │ complete_     │ │   PIBT → cooperative A* → serial
+│ │  agent_goals  │ │   + final-goal agent eviction passes
+│ └───────────────┘ │
+└─────────┬─────────┘
+          │ std::vector<std::vector<int>> plan_
+          ▼
+┌───────────────────┐
+│  main.cpp emits   │  one joint action per stdout line; reads server ack
+└───────────────────┘
 ```
 
-Then it reads the full level from standard input, computes a plan, and sends one joint action per timestep. Individual agent actions in a joint action are separated by `|`.
+A single per-variant wall-clock deadline (`kVariantBudgetSeconds = 12s`)
+bounds how long any one task ordering can run; the overall benchmark
+timeout is 30 s.
 
-Example:
+---
 
-```text
-Move(E)|NoOp|Push(N,N)
+## 2. Module map
+
+```
+searchclient_cpp_v2/
+├── CMakeLists.txt            # builds `searchclient_cpp_v2` + `v2_tests`
+├── include/aimas/
+│   ├── core.hpp              # ActionType, Action, actions(), Level, State
+│   ├── parser.hpp            # parse_level(istream&) -> Level
+│   ├── topology.hpp          # walls-only / box-aware BFS, components
+│   ├── single_box.hpp        # SingleBoxAStar: A* on (agent_pos, box_pos)
+│   ├── pibt.hpp              # PIBT joint planner for final phase
+│   └── solver.hpp            # Solver: orchestrates the whole pipeline
+├── src/
+│   ├── core.cpp              # 29-entry action table + State methods
+│   ├── parser.cpp            # level-file parser
+│   ├── topology.cpp          # cached BFS distances, connected components
+│   ├── single_box.cpp        # A* over (agent, box) pairs
+│   ├── pibt.cpp              # PIBT joint coordinator
+│   ├── solver.cpp            # 1 896 LOC — task variants, delivery,
+│   │                         #   relocation, evacuation, final phase
+│   └── main.cpp              # server protocol I/O
+└── tests/
+    └── test_main.cpp         # action_table, parse, applicable+conflict,
+                              # solver_trivial, solver_box, pibt_swap
 ```
 
-After each emitted joint action, the client reads one response line from the server before sending the next action.
+| Module | LOC | Depends on |
+|---|---:|---|
+| `core` | 462 | (stdlib only) |
+| `parser` | 162 | `core` |
+| `topology` | 256 | `core` |
+| `single_box` | 308 | `core`, `topology` |
+| `pibt` | 347 | `core`, `topology` |
+| `solver` | 2 044 | all of the above |
+| `main` | 60 | `core`, `parser`, `solver` |
+| `tests` | 196 | all |
 
-## Profiling and validation guards
+Dependency graph is strictly acyclic; lower-level modules never reference
+the orchestrator.
 
-`AIMAS_PROFILE=1` enables profiling events on stderr. The implementation uses `ScopedProfile` and `profile_event` around parsing, prioritized planning, serial fallback, bounded weighted A*, graph search, and selected inner planner stages.
+---
 
-### Default-on safety / heuristic features
+## 3. Domain model (`core.hpp`)
 
-Three default-on features can be disabled for ablation by setting the matching env var to `0`:
+### Action table
 
-| Env var (default ON) | Feature | Effect when ON |
-|---|---|---|
-| `AIMAS_DEADLOCK_PRUNING` | Static-deadlock pruning (push+pull reverse reachability per box letter) | Prunes pushes/pulls that would move a box into a cell from which it cannot reach any goal of its letter. Sound because Pull is a legal action in this domain. |
-| `AIMAS_GOAL_DAG` | Goal-dependency DAG ordering with chronological backtracking | Adds an ordering variant where each agent's `DeliverBox` subtasks are topologically sorted so that placing one box's goal does not strand another box. Falls back to input order on cycle. |
-| `AIMAS_PUSH_DISTANCE_H` | Tighter admissible heuristic combining passable-BFS with push-distance BFS | For `DeliverBox` heuristic values, takes `max(passable_dist, push_dist)` from the box's current cell to its goal. Push-distance BFS counts box moves where each move requires push or pull agent feasibility. Both grids are admissible, so `max` keeps admissibility. |
+29 actions, identical to the canonical DTU set:
 
-All three are validated regression-clean against the full 116-level known-solved set and are safe to ship default-on.
+| Type   | Count | Notes                                                          |
+|--------|------:|----------------------------------------------------------------|
+| `NoOp` | 1     | No motion, always applicable                                   |
+| `Move` | 4     | Agent moves N/S/E/W into an empty cell                         |
+| `Push` | 12    | 4 agent dirs × 3 box dirs (box can't reverse the agent)        |
+| `Pull` | 12    | 4 agent dirs × 3 box dirs                                      |
 
-### Experimental opt-in repair
+Semantics:
 
-`AIMAS_LNS_REPAIR=1` enables experimental prioritized-side repair attempts as a last-ditch pass after normal prioritized attempts fail. The current implementation is intentionally opt-in only: it can retry same-agent movable-box state search, bounded local joint repair, blocker relocation for final agent goals, future-owner/self relocation slices, and serial-completion splices using the existing serial machinery. The tuned repair is regression-clean on the 116-level solved set and converts `complevels/MArtians.lvl`, raising the opt-in competition count from 26/47 to 27/47, but it is still not default-on because the remaining unsolved cases mostly time out and need stronger coordination/windowed planning.
+- `Push(adir, bdir)`: agent steps in `adir`; box at the cell the agent
+  vacates is pushed in `bdir`.
+- `Pull(adir, bdir)`: agent steps in `adir`; box at `-bdir` from the
+  agent is pulled into the agent's old cell.
 
-Additional opt-in tuning knobs include `AIMAS_LNS_STATE_BUDGET_S`, `AIMAS_LNS_LOCAL_AREA`, `AIMAS_LNS_JOINT_BUDGET_S`, `AIMAS_LNS_JOINT_EXPANSIONS`, `AIMAS_LNS_LOCAL_AGENTS`, `AIMAS_LNS_LOCAL_RADIUS`, and `AIMAS_LNS_LOCAL_HORIZON`.
+### Level (immutable per game)
 
-### Experimental windowed fallback
-
-`AIMAS_ENABLE_WINDOWED_REPLAN=1` enables a bounded full-joint windowed fallback
-after the prioritized, serial, and bounded weighted-A* stages fail. It searches
-from the current state for a horizon-limited partial plan, commits a short
-prefix only if the heuristic/goal count improves, and replays every committed
-joint action before accepting it. `AIMAS_WINDOWED_CLASSIC_BUDGET_S` can reserve
-time for this stage on levels where the classic pipeline would otherwise consume
-the whole server timeout. Other knobs are `AIMAS_WINDOWED_HORIZON`,
-`AIMAS_WINDOWED_COMMIT`, `AIMAS_WINDOWED_MAX_WINDOWS`,
-`AIMAS_WINDOWED_BUDGET_S`, `AIMAS_WINDOWED_STEP_BUDGET_S`,
-`AIMAS_WINDOWED_EXPANSIONS`, and `AIMAS_WINDOWED_WEIGHT`.
-
-This is not true WHCA*/RHCR yet because each window still expands full joint
-states rather than planning per agent against a reservation window. Targeted
-testing on `BigSplit`, `Lily`, `MArtians`, `Minchia`, and `ZOOM` produced no
-new solves. The implementation is kept opt-in as a safe experimental tool, but
-the next likely improvement should be a decomposed MAPF/CBS or local
-neighborhood repair adapter.
-
-### Experimental CBS fallback
-
-`AIMAS_ENABLE_CBS_REPLAN=1` enables a bounded fixed-assignment CBS fallback
-after prioritized and serial planning fail. The high-level CBS node stores
-per-agent constraint lists, per-agent low-level plans, a sum-of-costs score, and
-a conflict count. The open list is best-first on fewer conflicts, then lower
-cost, then fewer constraints. Duplicate high-level nodes are rejected with a
-canonical key over the sorted constraints.
-
-The low-level planner is the existing `plan_agent` Space-Time A* over the
-assigned subtasks. For CBS only, starts of boxes assigned to any agent are
-treated as dynamic rather than permanent static blockers, and the CBS conflict
-detector tracks their planned positions from time zero until they move. A
-conflict creates two CBS children: one constraining each involved owner. The
-implemented constraint types are:
-
-| Constraint | Representation | Low-level effect |
-|---|---|---|
-| Vertex | `(agent, row, col, time)` or `[time, horizon]` for parked entities | Blocks the constrained agent or its active box from occupying that cell at the constrained time/range. |
-| Edge/swap | `(agent, from, to, time)` | Blocks the constrained agent or active box from traversing that edge at that time. |
-
-The final accept gate is still `plan_is_server_valid`, so an invalid CBS plan is
-never emitted. CBS-specific knobs are `AIMAS_CBS_CLASSIC_BUDGET_S` (reserve time
-from the older pipeline), `AIMAS_CBS_BUDGET_S`, `AIMAS_CBS_LOW_LEVEL_BUDGET_S`,
-`AIMAS_CBS_MAX_NODES`, `AIMAS_CBS_VARIANTS`, `AIMAS_CBS_MAX_AGENTS`, and
-`AIMAS_CBS_MAX_BOXES`.
-
-This is a real CBS mechanism, but it is not yet a full box-MAPF solver. It keeps
-the current fixed task assignment and task order; it can coordinate timing
-between independently planned agents and boxes, but it cannot yet reassign a
-box, change a goal order across agents, or force an inactive future box to be
-moved earlier. Targeted tests on `BigSplit`, `MArtians`, and `ZOOM` produced no
-new solves because their current failures still occur inside the low-level box
-delivery planner before high-level CBS branching can help.
-
-Before any selected strategy runs, `prioritized::basic_goal_feasibility` rejects simple impossible metadata cases:
-
-- numbered agent goals whose agent is missing;
-- box-goal letters with too few boxes;
-- unsatisfied box goals with no compatible-color agent.
-
-When this gate fails, the client exits without emitting an invalid plan.
-
-## Global graph search algorithms
-
-The original global search path is still available. These algorithms search in the full joint state space, meaning a node contains every agent and every box, and each expansion enumerates valid joint actions.
-
-| Flag | Algorithm | Evaluation |
-|---|---|---|
-| `-bfs` | Breadth-first search | FIFO queue. |
-| `-dfs` | Depth-first search | LIFO stack. |
-| `-astar` | A* | `f(n) = g(n) + h(n)`. |
-| `-wastar [weight]` | Weighted A* | `f(n) = g(n) + weight * h(n)`, default weight 5. |
-| `-greedy` | Greedy best-first | `f(n) = h(n)`. |
-| `-greedy-goalcount` | Greedy using unsatisfied-goal count | `f(n) = h_goal_count(n)`. |
-| `-astar-goalcount` | A* using unsatisfied-goal count | `f(n) = g(n) + h_goal_count(n)`. |
-| `-smart`, `-smart-greedy` | Smart greedy | `f(n) = h_smart(n)`. |
-| `-smart-wastar [weight]` | Smart weighted A* | `f(n) = g(n) + weight * h_smart(n)`, default weight 3. |
-
-`GraphSearch::search` also supports optional runtime and expansion budgets. Those budgets are used by internal fallbacks, not by every command-line strategy.
-
-## Heuristics
-
-The base heuristic precomputes grid distances from each goal using BFS over walls. It then combines several estimates.
-
-### Box-to-goal matching
-
-The old implementation estimated each unsatisfied goal independently by finding the nearest matching box. That can reuse the same box for multiple goals.
-
-The current implementation uses one-to-one matching per box letter:
-
-- For each letter `A` to `Z`, collect unsatisfied goals with that letter.
-- Collect boxes of the same letter that are not already correctly placed.
-- If there are at most 12 goals/boxes, solve the matching with dynamic programming over bitmasks.
-- For larger cases, use a greedy nearest-box approximation.
-- If not enough boxes exist or a target is unreachable, add a large penalty.
-
-### Agent and goal pressure
-
-The heuristic also includes:
-
-- distance for numbered agent goals;
-- distance from each agent to a useful compatible-color box;
-- count of unsatisfied goals;
-- static corner deadlock penalties for boxes stuck in non-goal corners.
-
-### Smart heuristic
-
-`h_smart` is:
-
-```text
-h_smart = h
-        + 7 * h_goal_count
-        + 2 * agent_to_useful_box_distance
-        + deadlock_penalty
+```cpp
+struct Level {
+    std::string name;
+    int rows, cols;
+    std::vector<std::vector<bool>> walls;     // rows × cols
+    std::vector<std::vector<char>> goals;     // letter (A–Z) or digit (0–9)
+    std::vector<int>  agent_color;            // index → color id
+    std::vector<int>  agent_rows, agent_cols; // initial positions
+    std::array<int,26> box_color;             // letter → color (or -1)
+    std::vector<std::vector<char>> initial_boxes;
+};
 ```
 
-Best-first tie-breaking also uses smarter ordering:
+### State (mutable per search node)
 
-1. lower `f`;
-2. lower `h_smart`;
-3. fewer unsatisfied goals;
-4. deeper `g`, which prefers progress among equal-scoring nodes.
+```cpp
+struct State {
+    std::vector<int> agent_rows, agent_cols;
+    std::vector<std::vector<char>> boxes;  // rows × cols, '\0' if empty
 
-## Hybrid default and strategy flow
-
-The current `main` chooses whether to run the prioritized planner based on the first strategy flag.
-
-| Invocation | Flow |
-|---|---|
-| no flag | prioritized planner -> serial fallback -> optional `AIMAS_ENABLE_CBS_REPLAN` fallback -> bounded WA*(5) -> optional `AIMAS_ENABLE_WINDOWED_REPLAN` fallback -> final smart WA*(3) graph search |
-| `-prioritized`, `-pp` | prioritized planner -> serial fallback -> optional `AIMAS_ENABLE_CBS_REPLAN` fallback -> bounded WA*(5) -> optional `AIMAS_ENABLE_WINDOWED_REPLAN` fallback -> stop if still unsolved |
-| `-prioritized-fallback`, `-pp-fallback` | prioritized planner -> serial fallback -> final smart WA*(3) graph search |
-| any graph-search flag | run the selected graph search directly |
-
-The basic feasibility gate runs before this strategy dispatch. `-prioritized-fallback` / `-pp-fallback` skips the bounded weighted-A*(5) repair and goes directly to the selected best-first frontier after prioritized and serial stages fail.
-
-## Prioritized planner
-
-The prioritized planner lives in `namespace prioritized` inside `main.cpp`. It tries to decompose the level into per-agent tasks, plan each agent with Space-Time A*, reserve its trajectory, and then combine all per-agent paths into a joint plan. Complete candidates are always replayed through `plan_is_server_valid` before they can be emitted.
-
-### Task representation
-
-The planner uses two task types:
-
-| Type | Meaning |
-|---|---|
-| `DeliverBox` | Move a specific box letter from a start cell to a matching goal cell. |
-| `ReachCell` | Move a numbered agent to its own goal cell. |
-
-`BoxTask` represents an unsatisfied box goal before it is assigned to an agent.
-
-### Building box tasks
-
-`build_box_tasks` scans the level for unsatisfied box goals, then pairs each goal with a box of the same letter.
-
-The selection uses:
-
-- BFS distance from goal to candidate box;
-- compatible-color agent availability;
-- `feasible_delivery_cost`, an A*-like reachability probe over `(agent position, box position)`;
-- corridor depth bias, so boxes needed deep in corridors are often planned earlier.
-
-The result is a list of box delivery tasks with chosen box start cells and goal cells.
-
-Repeated static reachability probes reuse cached BFS distance grids through `cached_bfs_from`.
-
-### Feasibility probe
-
-`feasible_delivery_cost` is not the final planner. It is a fast static check used for assignment quality.
-
-It searches a reduced state:
-
-```text
-agent row, agent col, box row, box col
+    static State initial(const Level&);
+    bool applicable(int agent, const Action&) const;
+    bool conflicting(const std::vector<int>& joint_action) const;
+    bool apply_joint(const std::vector<int>& joint_action);   // transactional
+    bool goal_state() const;                                  // boxes + numeric agents
+};
 ```
 
-It ignores time and reservations, but respects walls and most current boxes. It estimates whether a compatible agent can actually push or pull a candidate box to a candidate goal.
+`apply_joint` is the **only** mutator. It checks `applicable` for every
+agent and runs `conflicting` (vertex + edge/swap conflicts on the
+intended deltas) before any mutation. On failure it leaves the state
+exactly as before.
 
-### Task assignment
+---
 
-`assign_tasks` assigns `BoxTask`s to compatible-color agents. It maintains each agent's virtual position and repeatedly chooses the cheapest task-agent pair.
+## 4. Joint-action plan: what `plan_.size()` actually counts
 
-The assignment score includes:
+The solver accumulates a plan as `std::vector<std::vector<int>> plan_`.
+Every outer entry is **one server time-step**; every inner entry is the
+action index (0..28) the corresponding agent executes that step. All
+layers funnel through a single mutator:
 
-- feasible delivery cost;
-- per-agent load penalty, to avoid overloading one agent;
-- goal corridor depth bias, to prefer deep goals earlier;
-- a fallback BFS distance score if the full feasibility probe fails.
-
-After box tasks are assigned, numbered agent-goal tasks are appended to the relevant agent.
-
-## Space-Time A* subtask planner
-
-`plan_subtask` is the low-level planner used by the prioritized planner. It searches:
-
-```text
-agent row, agent col, box row, box col, time
+```cpp
+void Solver::append_joint(const std::vector<int>& joint) { plan_.push_back(joint); }
 ```
 
-For a `DeliverBox` subtask, the box position is active. For a `ReachCell` subtask, only the agent position matters.
+Different layers emit very different "shapes" of joint action:
 
-It respects:
+| Layer                                    | Shape per step                              | Plan-length characteristic               |
+|------------------------------------------|---------------------------------------------|------------------------------------------|
+| `deliver_task` (single-box A*)           | Active agent moves, others `NoOp`           | Sum of per-box step counts (serial)      |
+| `complete_agent_goals_pibt` (PIBT)       | Real joint move; many agents per step       | ≈ longest agent path                     |
+| `complete_agent_goals_reserved` (CA*)    | Real joint move from time-extended replay   | ≈ max plan_time across agents            |
+| `complete_agent_goals_serial`            | One agent moves, others `NoOp`              | Sum of per-agent BFS path lengths        |
+| `evacuate_corridor_agents`               | One evacuee moves, others `NoOp`            | Adds path length of each evicted agent   |
+| `relocate_blocker`, `scatter_agent_to`   | One mover, others `NoOp`                    | One step per nudge                       |
 
-- walls;
-- static boxes not involved in the current subtask;
-- already reserved cells;
-- already reserved edges;
-- swap conflicts;
-- unplanned agents that should temporarily stay fixed;
-- time horizon;
-- per-subtask runtime and expansion budgets.
+`main.cpp` emits each row to stdout and reads the server's per-row ack
+once. The server's count (= `plan_.size()` when solved) is what gets
+recorded in the benchmark CSVs as `server_len`.
 
-It uses an A*-style priority queue with a distance-to-goal heuristic. For box delivery, the heuristic estimates the box distance to the goal plus the agent distance needed to reach/push the box.
+**Practical consequence**: a level solved entirely via PIBT will have a
+plan dozens of times shorter than the same level solved serially. There
+is no plan-length penalty for `NoOp`-padded joint actions other than
+making the count larger — the server happily accepts them.
 
-## Reservation table
+---
 
-The prioritized planner's `ReservationTable` stores:
+## 5. Search algorithms
 
-- reserved cells: `(row, col, time)`;
-- reserved edges: `(from row, from col, to row, to col, time)`.
+### 5.1 Topology (`topology.{hpp,cpp}`)
 
-`commit_plan` supports two reservation policies:
+- **Walls-only BFS distance map**: shortest path treating only walls as
+  obstacles (no boxes, no agents). Cached per source cell. Used as the
+  admissible heuristic for `SingleBoxAStar` and for ranking candidates
+  in greedy/DP task assignment and parking-cell scoring.
+- **Box-aware BFS** (state-dependent): used by `single_box` to verify
+  whether an agent can still reach a particular cell given the current
+  box layout.
+- **Connected components**: walls-only flood fill. Currently used for
+  reachability checks; reserved for future component decomposition.
 
-| Policy | Use |
-|---|---|
-| `ReservationPolicy::Conservative` | Default. Keeps extra movement padding around old/new cells to reduce vacated-cell conflicts. |
-| `ReservationPolicy::Relaxed` | Retry mode. Removes extra padding while keeping real occupancy, edge, tail, and delivered-box reservations. |
+### 5.2 Single-box A\* (`single_box.{hpp,cpp}`)
 
-After an agent plan is accepted, `commit_plan` reserves:
+A\* over the joint state of one agent and one box. Other agents are
+treated as moving obstacles (frozen at their current positions). The
+result is a single-agent action sequence; the caller is responsible for
+embedding each action into a joint action (other agents NoOp) and
+calling `State::apply_joint` to commit.
 
-- every agent cell at each timestep;
-- the agent's final cell through the horizon;
-- every moved box cell over time;
-- the final box cell through the horizon;
-- edges for moving agents and boxes;
-- in conservative mode, extra old/new cell reservations around movement to reduce vacated-cell conflicts and match server behavior more closely.
+- **Heuristic**: walls-only Manhattan from box to its goal +
+  walls-only Manhattan from agent to the closest box-adjacent cell.
+  Admissible and consistent.
+- **Tie-breaking**: f-score, then g-score, then deterministic action
+  ordering.
+- **Expansion cap**: 200 000 nodes per call; aborts cleanly on cap.
+- **Dead-cell filter**: marks cells from which the box can never reach
+  any same-letter goal (push-only mode) and prunes pushes into them.
 
-This is how later agents avoid colliding with earlier planned agents and boxes.
+### 5.3 Task assignment
 
-`CommittedWorld` is used only as a retry path after a complete candidate fails replay validation. It applies already committed agent plans to a stricter box grid before planning later agents, which avoids treating moved boxes as if they were still at their original starts.
+Two complementary strategies, used **additively** so each level gets
+multiple distinct orderings to try:
 
-## Prioritized solve attempts
+1. **DP-optimal matching** (`build_tasks_matched_dp`, bitmask DP):
+   per letter, assigns boxes to goals to **minimise total walls-only
+   distance**. Bitmask DP over `2^B` states; falls back to greedy when
+   `B > 12` (4 096 states is the cap). Mirrors the matching from
+   the legacy enhanced solver.
+2. **Greedy matched** (`build_tasks_matched`): per letter, picks each
+   goal's closest unused same-letter box. Cheap, generally close to
+   optimal, sometimes better than DP under tie-breaking.
 
-`prioritized::solve` tries several variants instead of relying on one fixed order.
+Each base matching is then permuted into **5 final-orders** (closest-
+agent-first, FIFO, LIFO, far-goal-first, color-grouped) by
+`sort_tasks`, with the 4-mode goal-order applied to the greedy version,
+yielding up to **4 × 5 + 5 = 25 distinct task variants** (deduplicated
+by signature, capped at `kMaxVariants = 25`).
 
-### Task-order variants
+### 5.4 Delivery (`solve_once::run_queue`)
 
-For each agent, it tries variants such as:
+For each task in FIFO order:
 
-- original assignment order;
-- deeper corridor goals first;
-- farther goals first;
-- top-left goal ordering;
-- bottom-right goal ordering.
-
-### Agent-priority orders
-
-For each task variant, it tries agent priority orders:
-
-- agents with the most tasks first;
-- natural agent order;
-- agents with the fewest tasks first;
-- each tasked agent boosted to the front.
-
-### Static-agent modes
-
-Each priority order is tried in two modes:
-
-- conservative: later agents are treated as static obstacles while planning earlier agents;
-- movable-agents: later agents are not blocked as aggressively.
-
-Each complete candidate joint plan is replayed through `plan_is_server_valid`. A plan is accepted only if every action is applicable, no joint action conflicts, and the final state satisfies all goals.
-
-For each variant/order/mode, the retry order is:
-
-1. legacy conservative planning;
-2. if a complete candidate fails replay validation, retry with committed-world state;
-3. retry with relaxed reservations;
-4. if that also completes but fails replay validation, retry with both committed-world state and relaxed reservations.
-
-These behavior-changing modes are conditional fallbacks, not the default path.
-
-## Serial fallback planner
-
-If prioritized planning fails, `solve_serial` tries a more sequential strategy. It is intended for smaller levels:
-
-- skipped when there are more than 16 boxes;
-- skipped when there are more than 80 box tasks;
-- default total budget is 15 seconds.
-
-The serial fallback:
-
-1. Builds the same box-task list.
-2. Tries multiple global task orders: original, reversed, deep goals first, shallow goals first, nearest first, top-left goals first, and bottom-right goals first.
-3. For each task, chooses the best compatible agent.
-4. Plans the active task with `plan_subtask`.
-5. If that fails, tries `plan_single_agent_state_search`, a bounded single-agent best-first state search.
-6. If still blocked, may relocate an interfering box to a parking cell and then complete the active task.
-7. Appends any required numbered agent-goal moves.
-8. Validates the final plan with the same server-style replay check.
-
-### Blocker eviction
-
-Because serial execution gives one active agent real work while others mostly `NoOp`, an action can be blocked by another agent. The serial fallback detects this and uses `evict_agent`:
-
-- finds the blocking agent;
-- plans simple BFS moves to a nearby safe cell outside the active path;
-- appends those moves before retrying the active action.
-
-### Box relocation
-
-If a task cannot be planned because another box blocks the rough path, `try_relocate_and_complete_task` can:
-
-- identify candidate blocking boxes near the active box path;
-- choose parking cells that are not goals and not on the rough active path;
-- move the blocking box aside;
-- retry the original active box delivery.
-
-This is not a general solver, but it helps on levels where one misplaced box blocks a corridor.
-
-## Bounded weighted-A* fallback
-
-For default mode and `-prioritized` / `-pp`, if both prioritized planning and serial fallback fail, the code tries:
-
-```text
-Weighted A* with weight 5
-normal budget: 10 seconds, 50,000 expanded states
-small joint repair budget: 25 seconds, 250,000 expanded states
+```
+deliver_task                              (single-box A*)
+  └─ if fails →
+deliver_task_with_scatter                 (one evictable agent off corridor)
+  └─ if fails →
+evacuate_corridor_agents + deliver_task   (radius-1 buffer; cascade evict)
+  └─ if fails →
+push task to back of queue, try others    (defer-on-failure)
+  └─ if all defer fails →
+deliver_task_with_relocation              (move boxes off path, recursive)
+  └─ if fails →
+deliver_task_with_relocation(allow_on_goal_blockers=true)
+  └─ if fails →
+return false → next variant
 ```
 
-The small joint repair budget is used when the instance has at most 5 agents and at most 40 boxes.
+After the queue empties, a **redelivery scan** re-queues any goal cell
+that should contain a letter but doesn't (in case aggressive relocation
+displaced a previously-delivered box). Up to 3 redelivery rounds.
 
-This is a last quick attempt to solve cases where decomposition failed but global search is still small enough.
+All non-trivial layers are transactional: each takes a `state_` and
+`plan_.size()` snapshot, and on failure restores both exactly — no
+partial joint actions ever leak into the final plan.
 
-## Final smart graph-search fallback
+### 5.5 Relocation (`deliver_task_with_relocation`,
+`try_relocate_box_recursive`)
 
-For default mode and `-prioritized-fallback` / `-pp-fallback`, if no plan has been found, the client falls back to the selected frontier. In practice this is smart weighted A* with weight 3 for default/prioritized-fallback modes. Plain `-prioritized` / `-pp` stops after the bounded weighted-A* repair and exits without printing an invalid plan.
+When the box-to-goal walls-only path is occupied by another box:
 
-This fallback can solve small and medium levels, but it can still blow up on larger multi-agent levels because it searches the full joint state space.
+1. Find blocker boxes on the path, sorted by proximity to the active
+   box.
+2. For each blocker, generate up to 6 candidate parking cells ranked by
+   distance × 3 − degree × 2 + goal-penalty.
+3. Try `try_relocate_box_recursive` on `(blocker → park)`:
+   - Direct path attempt with `SingleBoxAStar`.
+   - If blocked and `depth > 0`, **recursively** relocate boxes blocking
+     the relocation path, then retry. Depth 1 by default.
+4. Evict the mover-agent off the forbidden zone before retrying delivery
+   (so single-box A\* — which treats other agents as walls — isn't
+   blocked by the agent we just used).
+5. Up to 6 outer rounds per task with an anti-thrash blacklist of
+   `{letter, from_r, from_c, to_r, to_c}` tuples.
 
-## Dormant MAPF components
+### 5.6 Final agent phase (`complete_agent_goals`)
 
-The `searchclient_cpp/searchclient_cpp/mapf/` folder contains a separate MAPF architecture, but it is not currently wired into the active executable.
+Numeric agent goals (`0`–`9`) are handled last because the boxes are
+already on their letter goals and acting as walls. Three planners,
+tried in order, with up to 4 evict-and-retry rounds layered around
+them:
 
-| Component | Intended role |
-|---|---|
-| `BFSDistanceMap` | Reusable BFS distance grids. |
-| `TaskAllocator` | Box-task construction and Hungarian-style task assignment interface. |
-| `ReservationTable` | Space-time reservations for MAPF components. |
-| `SpaceTimeAStar` | Single-agent Space-Time A* respecting reservations and constraints. |
-| `CAAStar` | Cooperative A* with random priority restarts. |
-| `ECBS` | CBS/ECBS-style high-level conflict resolution over per-agent paths. |
-| `ALNSDestroy`, `ALNSRepair`, `ALNS` | Adaptive Large Neighborhood Search optimizer around an initial solution. |
+1. **PIBT** (`complete_agent_goals_pibt`, `pibt.cpp`)
+   Priority Inheritance with Backtracking (Okumura et al. 2019). Each
+   agent is assigned a static priority by remaining distance; the
+   highest-priority agent picks first, lower-priority agents pick
+   non-conflicting cells with backtracking when blocked. Wrapped in
+   our `State::apply_joint` so swap and vertex conflicts are still
+   validated at commit time.
+2. **Cooperative A\*** (`complete_agent_goals_reserved`)
+   Time-extended single-agent A\* with reservation tables. Movers are
+   ordered farthest-first; static agents pre-reserve their cells at
+   every time-step. Each mover plans through `(cell, time)` space,
+   forbidden from entering reserved cells or traversing reserved edges
+   (in the **reverse** direction, to prevent swap). Target cell is
+   reserved for all subsequent time steps. `max_time = min(800,
+   max(80, total_dist * 3 + num_agents * 10))`; 200 000 expansion cap
+   per agent.
+3. **Serial BFS** (`complete_agent_goals_serial`)
+   Per-agent BFS treating every other agent as a static wall. Now
+   **incremental** (commits per agent, multi-round) so partial
+   progress is preserved when only some agents need to move.
 
-Those files describe algorithms that could become a cleaner modular MAPF pipeline. They are compile-checked by the isolated `mapf_experiments` target, but making them active would still require an adapter and explicit `main.cpp` flag dispatch.
+Between rounds, `evacuate_final_goal_agent_blockers` evicts any agent
+sitting on another agent's final goal cell or path, and
+`clear_paths_to_agent_goals` relocates boxes that would prevent serial
+BFS from completing.
 
-## Benchmarking and observed behavior
+---
 
-The current repository includes benchmark support for running many levels through `misc/server.jar` under a timeout:
+## 6. Transactional invariants
+
+| Operation                          | Snapshots `state_`? | Snapshots `plan_.size()`? | On failure                  |
+|------------------------------------|:-:|:-:|---|
+| `deliver_task`                     | ✓ | ✓ | Restore both                |
+| `deliver_task_with_scatter`        | ✓ | ✓ | Restore both                |
+| `deliver_task_with_relocation`     | ✓ | ✓ | Restore both                |
+| `try_relocate_box_recursive`       | ✓ | ✓ | Restore both                |
+| `evacuate_corridor_agents`         | ✓ | ✓ | Restore both                |
+| `solve_once` (per variant)         | – | – | Caller (`solve`) restarts   |
+| `Solver::solve` (top level)        | – | – | Returns `{}` if all fail    |
+
+`solve` itself snapshots nothing — it just resets `state_ =
+initial_state_` and `plan_.clear()` between variants. This is safe
+because `initial_state_` is captured once in the constructor.
+
+---
+
+## 7. Build, run, test
 
 ```bash
+# Build
+cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build -DCMAKE_BUILD_TYPE=Release
+cmake --build searchclient_cpp_v2/build -- -j4
+
+# Unit tests
+./searchclient_cpp_v2/build/v2_tests
+
+# Run against the server
+java -jar misc/server.jar \
+    -l complevels_2026/donut.lvl \
+    -c "searchclient_cpp_v2/build/searchclient_cpp_v2" \
+    -t 30 -g -s 100
+
+# Benchmark a whole level set
 python3 benchmarks/run_all_levels.py \
-  --level-root levels \
-  --level-root new_comp_levels \
-  --level-root complevels \
-  --algorithm=-prioritized \
-  --timeout 180 \
-  --output-name solved-all-current \
-  --normalize
+    --client searchclient_cpp_v2/build/searchclient_cpp_v2 \
+    --server misc/server.jar \
+    --level-root complevels_2026 \
+    --algorithm -prioritized \
+    --timeout 30 \
+    --max-joint-actions 20000 \
+    --normalize \
+    --output benchmarks/results/v2-bench-complevels-2026.csv
 ```
 
-The benchmark runner:
+Unit tests use a tiny zero-dependency `CHECK(...)` harness (no
+GoogleTest, no Catch2) so they run identically in Debug and Release.
 
-- normalizes level files;
-- runs the Java server with the chosen client command;
-- enforces timeout;
-- records solution length, wall time, timeout status, and logs;
-- writes CSV and Markdown summaries.
+---
 
-`searchclient_cpp/solved_levels.md` tracks verified solved levels for the prioritized strategy. The current verified default baseline is 90 / 104 in `levels`, 0 / 6 in `new_comp_levels`, and 26 / 47 in `complevels`; the `complevels` increase comes from rechecking the previous solved set plus the parser-fixed `rooMbA.lvl`. With `AIMAS_LNS_REPAIR=1`, the tuned experimental repair also solves `complevels/MArtians.lvl` without solved-set regressions, for an opt-in competition count of 27 / 47.
+## 8. Provenance & references
 
-## Practical interpretation
+| Component | Source |
+|---|---|
+| Domain semantics (action table, conflict rules) | DTU `searchclient_java` starter |
+| Single-box A\* with walls-only heuristic | Standard textbook A\*, pattern from earlier in-house solvers |
+| Multi-variant task assignment + relocation pipeline | Carried over from earlier monolithic C++ iterations |
+| **PIBT** | Okumura et al. (2019) "Priority Inheritance with Backtracking for Iterative Multi-agent Path Finding" |
+| **Cooperative A\*** | Silver (2005) "Cooperative Pathfinding" (with the standard reverse-edge swap check) |
+| **DP-optimal letter matching** | Bitmask DP over assignment; folklore |
+| References in `research_papers/` | A\*+ (`AStar_Plus/`), LMAPF (`LMAPF/`) |
 
-The current implementation is best understood as a competition-oriented heuristic planner:
+---
 
-- The prioritized planner is fast when tasks can be decomposed cleanly by agent and box.
-- Committed-world and relaxed-reservation retries are safety valves for complete candidates that fail replay validation.
-- The serial fallback handles smaller levels and some corridor/blocker cases.
-- Smart weighted A* is a safety net for cases where global search is still feasible.
-- The separate `mapf/` algorithms are promising but currently inactive from the executable's point of view.
+## 9. What's deliberately **not** here
+
+These were considered and rejected (or postponed) for v2:
+
+- **CBS / ECBS** as the primary planner. PIBT + cooperative A\* gives
+  most of the benefit at a fraction of the implementation cost; CBS
+  remains an option for the dense-rotation puzzles
+  (Planarchy / TriSplit / Apdo class) we still can't solve.
+- **Environment flags** for behavioural toggles. v2 is one path: every
+  feature is either always-on or it doesn't exist. The legacy solver's
+  15+ env flags made debugging and reproducibility painful.
+- **GoogleTest / Catch2**. The custom `CHECK(...)` macro is 30 lines
+  and zero dependencies; tests stay portable.
+- **Component decomposition**, **joint-search A\* for ≤5 agents**, and
+  **PIBT-during-delivery** are designed for but not yet implemented;
+  see the roadmap in `searchclient_cpp_v2/README.md`.

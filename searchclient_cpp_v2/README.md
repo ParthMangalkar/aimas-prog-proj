@@ -1,239 +1,407 @@
 # searchclient_cpp_v2
 
-A clean modular C++17 rewrite of the MAPF-with-boxes search client for the
-AIMAS Hospital domain. Built from scratch on the `searchclient_java`
-starter architecture (parse → state → search → emit), but factored into
-focused modules with cleanly separated concerns for domain semantics,
-search, and orchestration.
+A modular C++17 search client for the **AIMAS Hospital (Multi-Agent
+Path Finding with Boxes)** domain used in DTU's Artificial Intelligence
+& Multi-Agent Systems course.
 
-## Why a rewrite?
+Current solve rate (r19): **73 / 116** on the combined level set
+(28 / 47 `complevels` + 45 / 69 `complevels_2026`).
 
-The original single-file C++ solvers (~5 000 lines) iteratively grew to
-solve **62/116** by piling correctness fixes and feature flags on top of
-an early prototype.
+---
 
-`searchclient_cpp_v2` keeps the *semantics* that took the earlier solver
-months to discover (action table, conflict detection, single-box A*
-mechanics, replay validation, transactional joint apply), but restructures
-the code into reviewable modules so future improvements (PIBT, CBS for
-agents, component decomposition, push/pull macros) can be added cleanly
-instead of grafted on.
+## Table of contents
 
-## Build & test
+- [Highlights](#highlights)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Project layout](#project-layout)
+- [Usage](#usage)
+- [Algorithms in one page](#algorithms-in-one-page)
+- [Benchmarks](#benchmarks)
+- [Configuration & limits](#configuration--limits)
+- [Tests](#tests)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+- [License & references](#license--references)
+
+See [`ARCHITECTURE.md`](../ARCHITECTURE.md) at the repo root for the
+full architectural deep-dive (module dependency graph, transactional
+invariants, planner internals, joint-action accounting).
+
+---
+
+## Highlights
+
+- **One executable, no flags.** Every feature is on by default; no env
+  vars to remember, no flag bisection when debugging.
+- **Three coordinated planners** for the final agent phase:
+  - PIBT (Okumura et al. 2019)
+  - Cooperative A\* with time-extended reservations (Silver 2005)
+  - Serial BFS as a deterministic fallback
+- **DP-optimal task assignment** (bitmask DP) layered alongside greedy
+  matching so neither one dominates — they run as separate variants
+  and the first to fully succeed wins.
+- **Recursive blocker relocation** with parking-cell scoring and an
+  anti-thrash blacklist.
+- **Corridor evacuation** (radius-1 buffer around both the box path
+  and the agent-to-box path) to clear deadlocks that single-box A\*
+  alone cannot.
+- **Transactional commits.** Every layer snapshots `(state_,
+  plan_.size())` and rolls both back atomically on failure — no
+  partial joint actions ever leak into the final plan.
+- **Zero-dependency unit tests** (`v2_tests`), identical in Debug and
+  Release.
+
+---
+
+## Requirements
+
+| Tool        | Version           | Used for                          |
+|-------------|-------------------|-----------------------------------|
+| C++ compiler | C++17            | Building the client               |
+| CMake       | ≥ 3.10            | Build configuration               |
+| Java        | ≥ 11              | Running the AIMAS validation server |
+| Python      | ≥ 3.9 (optional)  | `benchmarks/run_all_levels.py`    |
+
+Tested on macOS (Apple Clang 14+) and Linux (GCC 9+). No external C++
+libraries; only the standard library.
+
+---
+
+## Quick start
+
+From the repo root:
 
 ```bash
-cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build
+# 1. Build (Release recommended)
+cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build \
+      -DCMAKE_BUILD_TYPE=Release
 cmake --build searchclient_cpp_v2/build -- -j4
-./searchclient_cpp_v2/build/v2_tests          # unit tests
+
+# 2. Run unit tests
+./searchclient_cpp_v2/build/v2_tests
+
+# 3. Solve one level with the GUI
+java -jar misc/server.jar \
+     -l complevels_2026/donut.lvl \
+     -c "searchclient_cpp_v2/build/searchclient_cpp_v2" \
+     -t 30 -g -s 100
 ```
 
-Run against the server:
+Expected output (excerpt):
+
+```
+[v2] Parsed level 'donut' 11x17 with 3 agents.
+[v2] Plan length 42 joint actions, found in 0.084s.
+```
+
+---
+
+## Project layout
+
+```
+searchclient_cpp_v2/
+├── CMakeLists.txt
+├── README.md                ← (this file)
+├── include/aimas/
+│   ├── core.hpp             # ActionType, Action, actions(), Level, State
+│   ├── parser.hpp           # parse_level(istream&) -> Level
+│   ├── topology.hpp         # walls-only / box-aware BFS, components
+│   ├── single_box.hpp       # SingleBoxAStar
+│   ├── pibt.hpp             # PIBT joint planner
+│   └── solver.hpp           # Solver orchestrator
+├── src/
+│   ├── core.cpp             # 29-entry action table + State methods
+│   ├── parser.cpp
+│   ├── topology.cpp
+│   ├── single_box.cpp
+│   ├── pibt.cpp
+│   ├── solver.cpp           # pipeline, delivery, relocation, final phase
+│   └── main.cpp             # server protocol I/O
+└── tests/
+    └── test_main.cpp
+```
+
+Total: ~3 800 lines of source across 14 files.
+
+---
+
+## Usage
+
+### Building
+
+```bash
+cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build searchclient_cpp_v2/build -- -j4
+```
+
+Targets:
+
+| Target                       | Output                                              |
+|------------------------------|-----------------------------------------------------|
+| `searchclient_cpp_v2`        | The client binary                                   |
+| `v2_tests`                   | Self-contained unit-test runner                     |
+
+### Running
+
+The client speaks the standard DTU search-server protocol over stdin
+/ stdout. You launch it through the server, not directly:
 
 ```bash
 java -jar misc/server.jar \
-  -l complevels_2026/donut.lvl \
-  -c "searchclient_cpp_v2/build/searchclient_cpp_v2" \
-  -t 30 -g -s 100
+     -l <level-file>            \
+     -c "<path-to-binary>"      \
+     -t 30                      \   # solver wall-clock budget (s)
+     -g                         \   # show GUI
+     -s 100                     \   # ms between GUI frames
+     -o solution.txt                # write the plan
 ```
 
-## Architecture
+Run **without** `-g` for headless benchmarking.
 
-```
-include/aimas/
-  core.hpp        # ActionType, Action, actions(), Level, State, hashers, util
-  parser.hpp      # parse_level(istream&) -> Level
-  topology.hpp    # walls-only BFS, box-aware BFS, connected components
-  single_box.hpp  # SingleBoxAStar: A* over (agent_pos, box_pos)
-  solver.hpp      # Solver: orchestrates the pipeline
+### Batch benchmarks
 
-src/
-  core.cpp        # 29-entry action table + State methods (apply_joint, etc.)
-  parser.cpp      # ported from cpp_enhanced::parse_level
-  topology.cpp    # cached walls-only distance, state-dependent box-aware BFS
-  single_box.cpp  # the single-box A* implementation
-  solver.cpp      # build_tasks → deliver_task (alt-agent + defer) → final phase
-  main.cpp        # server-protocol entry point
-
-tests/
-  test_main.cpp   # action_table, parse, applicable+conflict, solver_trivial,
-                  # solver_box
+```bash
+python3 benchmarks/run_all_levels.py \
+        --client searchclient_cpp_v2/build/searchclient_cpp_v2 \
+        --server misc/server.jar \
+        --level-root complevels_2026 \
+        --algorithm -prioritized \
+        --timeout 30 \
+        --max-joint-actions 20000 \
+        --normalize \
+        --output benchmarks/results/v2-bench-complevels-2026.csv
 ```
 
-### Action table
+The runner emits a CSV with `solved / timeout / over_cap / category /
+server_len / wall_seconds` per level plus a Markdown summary and per-
+level log files.
 
-29 actions, identical to the canonical set used by `cpp_enhanced` and the
-DTU Java starter:
+---
 
-| Type  | Count | Notes                                                  |
-|-------|-------|--------------------------------------------------------|
-| NoOp  | 1     | No motion, always applicable                           |
-| Move  | 4     | Agent moves N/S/E/W into empty cell                    |
-| Push  | 12    | 4 agent directions × 3 box directions (box can't move opposite to agent) |
-| Pull  | 12    | 4 agent directions × 3 box directions                  |
+## Algorithms in one page
 
-`Push(agent_dir, box_dir)` semantics: agent steps in `agent_dir`, box at
-the cell the agent vacates is pushed in `box_dir`. `Pull(agent_dir, box_dir)`:
-agent steps in `agent_dir`, box at `-box_dir` from the agent is pulled into
-the agent's old cell.
+```
+                ┌────────────────────────────────────────────────┐
+                │            Solver::solve()                     │
+                │                                                │
+                │  build_task_variants():                        │
+                │    • DP-optimal per-letter assignment (×5)     │
+                │    • greedy matched × 4 goal-orders × 5 final  │
+                │    • dedupe, cap at 25 variants                │
+                │                                                │
+                │  for variant in variants:                      │
+                │      state_ = initial_state_; plan_.clear()    │
+                │      if solve_once(variant): return plan_      │
+                └────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                ┌────────────────────────────────────────────────┐
+                │            solve_once(tasks)                   │
+                │  ┌──────────────────────────────────────────┐  │
+                │  │      run_queue() — task delivery         │  │
+                │  │   deliver_task                           │  │
+                │  │   └→ scatter                             │  │
+                │  │      └→ corridor evacuate                │  │
+                │  │         └→ defer-and-retry               │  │
+                │  │            └→ blocker relocation         │  │
+                │  │               (recursive, anti-thrash)   │  │
+                │  └──────────────────────────────────────────┘  │
+                │  ┌──────────────────────────────────────────┐  │
+                │  │  redelivery scan (≤3 rounds)             │  │
+                │  └──────────────────────────────────────────┘  │
+                │  ┌──────────────────────────────────────────┐  │
+                │  │  complete_agent_goals()                  │  │
+                │  │   • final-goal agent eviction passes     │  │
+                │  │   • PIBT → cooperative A* → serial       │  │
+                │  └──────────────────────────────────────────┘  │
+                └────────────────────────────────────────────────┘
+```
 
-### Pipeline (v2.4)
+| Stage | Primary planner | Fallback chain |
+|---|---|---|
+| Task assignment | DP-optimal (bitmask) | Greedy matched per letter |
+| Per-task delivery | Single-box A\* | scatter → corridor-evac → defer → relocation |
+| Blocker relocation | Single-box A\* (recursive) | Larger parking-cell pool, allow-on-goal pass |
+| Final agent phase | PIBT | Cooperative A\* → serial BFS |
 
-1. **`build_task_variants`** — for each letter-goal cell, pick the closest
-   same-letter box and the closest same-color agent. Produces up to 12
-   distinct task orderings (4 goal-order × 5 final-order, deduped by
-   signature). Greedy per letter (no Hungarian, no component-aware
-   allocation yet).
-2. **`deliver_task` × N** — single-box A* on `(agent_pos, box_pos)`.
-   At the start, **re-find the box by letter** in case earlier
-   relocations/deliveries moved it (preferring the box closest to the
-   recorded original position, and skipping boxes already sitting on a
-   same-letter goal that isn't this task's goal). On failure:
-   - **(layer 1)** Alt-agent retry: try every other color-compatible
-     agent ranked by Manhattan-to-box.
-   - **(layer 2)** Defer-on-failure: push the task to the back of the
-     queue and try other tasks first (bounded retry of 3 passes).
-   - **(layer 3a)** Eager scatter: pick a single agent that lies on the
-     box→goal corridor and walk it off (full rollback on failure).
-   - **(layer 3b, last resort)** Blocker relocation: find boxes on the
-     walls-only path to the goal, pick a parking cell (free, non-goal,
-     not on path), nudge the blocker there with single-box A*, retry
-     the original delivery (up to 6 rounds, with an anti-thrash
-     blacklist of `{blocker, from, to}` tuples). After moving a blocker,
-     **evict the mover-agent** off the active path/goal so subsequent
-     single-box A* (which treats other agents as walls) isn't blocked.
-   - **(layer 3c, aggressive)** If standard relocation finds no movable
-     blockers, retry the same relocation pass with on-goal blockers
-     allowed. Any displaced on-goal box is re-queued by the next layer.
-3. **Redelivery scan** — after the queue empties, scan letter-goal cells
-   for unsatisfied goals. For any goal whose letter is missing, queue a
-   redelivery task using the closest same-letter box. Loop up to 3
-   rounds (handles aggressive-relocation displacement and similar).
-4. **`complete_agent_goals`** — dispatcher: try PIBT first (joint
-   coordinator) for agents with numeric goals; fall back to serial BFS
-   per agent if PIBT fails. Treats other agents as static obstacles in
-   the serial path.
+Joint-action plans are built incrementally by `Solver::append_joint`.
+Single-agent layers wrap their step in a joint action with `NoOp` for
+all other agents; PIBT and cooperative A\* emit real multi-agent joint
+actions. The `server_len` column in benchmark CSVs is exactly the
+final `plan_.size()`. See `ARCHITECTURE.md` §4 for the per-layer
+breakdown.
 
-All commits are transactional via `State::apply_joint`: deltas are
-validated against `applicable` AND `conflicting` before mutation, and
-solver-level operations snapshot `state_` + `plan_.size()` so a failed
-task rolls back cleanly without leaving partial joint actions in the
-plan.
+---
 
-## Current solve rate
+## Benchmarks
 
-| Build                                    | complevels | complevels_2026 | Total       |
-|------------------------------------------|------------|-----------------|-------------|
-| Legacy single-file C++ baseline          |          – |               – | 56 / 116    |
-| Legacy single-file C++ (enhanced)        |    27 / 47 |        35 / 69  | 62 / 116    |
-| **`searchclient_cpp_v2` (r19, current)** |  **28/47** |       **45/69** | **73/116**  |
-| └ v2 baseline (single-box A* only, r4)   |    13 / 47 |        24 / 69  |   37 / 116  |
-| └ + alt-agent retry + defer (r5)         |    14 / 47 |        25 / 69  |   39 / 116  |
-| └ + relocation + scatter (r6)            |    18 / 47 |        29 / 69  |   47 / 116  |
-| └ + PIBT for final agent phase (r7)      |    20 / 47 |        32 / 69  |   52 / 116  |
-| └ + multi-variant orchestration (r8)     |    21 / 47 |        34 / 69  |   55 / 116  |
+| Build                                       | complevels | complevels_2026 | Total       |
+|---------------------------------------------|-----------:|----------------:|-------------|
+| Legacy single-file C++ baseline             |          – |               – | 56 / 116    |
+| Legacy single-file C++ (enhanced)           |    27 / 47 |        35 / 69  | 62 / 116    |
+| **`searchclient_cpp_v2` (r19, current)**    |  **28/47** |       **45/69** | **73/116**  |
+| └ v2 baseline (single-box A\* only, r4)     |    13 / 47 |        24 / 69  |   37 / 116  |
+| └ + alt-agent retry + defer (r5)            |    14 / 47 |        25 / 69  |   39 / 116  |
+| └ + relocation + scatter (r6)               |    18 / 47 |        29 / 69  |   47 / 116  |
+| └ + PIBT for final agent phase (r7)         |    20 / 47 |        32 / 69  |   52 / 116  |
+| └ + multi-variant orchestration (r8)        |    21 / 47 |        34 / 69  |   55 / 116  |
 | └ + mover-agent eviction + box re-find (r9) |    22 / 47 |        38 / 69  |   60 / 116  |
-| └ + aggressive reloc + redelivery (r10)  |    23 / 47 |        40 / 69  |   63 / 116  |
-| └ + corridor evac + final-goal evac (r15)|    28 / 47 |        44 / 69  |   72 / 116  |
-| └ + cooperative A\* CAG planner (r17)    |    28 / 47 |        45 / 69  |   73 / 116  |
-| └ + DP-optimal task assignment (r19)     |    28 / 47 |        45 / 69  |   73 / 116  |
+| └ + aggressive reloc + redelivery (r10)     |    23 / 47 |        40 / 69  |   63 / 116  |
+| └ + corridor evac + final-goal evac (r15)   |    28 / 47 |        44 / 69  |   72 / 116  |
+| └ + cooperative A\* CAG planner (r17)       |    28 / 47 |        45 / 69  |   73 / 116  |
+| └ + DP-optimal task assignment (r19)        |    28 / 47 |        45 / 69  |   73 / 116  |
 
-See `benchmarks/results/v2-bench-*.csv` for per-level breakdowns. Each
-incremental layer in the v2 column is one self-contained code change.
+- Per-level CSVs and Markdown tables: `benchmarks/results/v2-bench-*.csv`.
+- Per-level logs: `benchmarks/results/v2-bench-*-logs/`.
+- Source-of-truth solved table (sorted, with timings and joint-action
+  counts): `solved_levels.md` at the repo root.
 
-v2 r19 **exceeds** `cpp_enhanced`'s 62/116 by +11. v2 solves 16 levels
-`cpp_enhanced` doesn't (BigForty, ClosedAI, ComMAndos, Dracarys,
-LaMAtes, MASaos, MAceship, MAuseCat, NineChars, SeisSiete, trauMA in
-2026; ISO, MArachnid, MArtians, TBSTANS1, doggy, merRAM in complevels);
-`cpp_enhanced` still solves 5 levels v2 doesn't (AMC, DECrunchy,
-CphAirprt ×2, KUTitans) — mostly require component decomposition or
-joint-search MAPF for tight rotation/swap puzzles.
+### Levels v2 solves that the legacy enhanced doesn't (+16)
 
-## Roadmap (to ≥ 62/116 and beyond)
+`complevels_2026`: BigForty, ClosedAI, ComMAndos, Dracarys, LaMAtes,
+MASaos, MAceship, MAuseCat, NineChars, SeisSiete, trauMA
 
-In priority order. Each item is one self-contained module; none requires
-re-architecting earlier modules.
+`complevels`: ISO, MArachnid, MArtians, TBSTANS1, doggy, merRAM,
+TriWards
 
-1. **Final-phase MAPF coordination** (module `pibt.{hpp,cpp}`) — replace
-   `complete_agent_goals_serial` with a PIBT-style joint planner so
-   agents can swap and cooperate to reach their final cells. Port the
-   Okumura-2019 PIBT implementation from `cpp_enhanced`. *Expected
-   impact: ~+5-10 levels* (closes the 9 "Failed final agent-goal phase"
-   failures and unlocks several others where serial agent paths
-   deadlock).
+### Levels the legacy enhanced solves that v2 doesn't (–5)
 
-2. **Metadata feasibility prune** — per-cell (not per-letter) check that
-   a candidate goal can be reached by *some* path through the active
-   box's current free space, given other boxes and color rules. This is
-   the correctness fix from `cpp_enhanced` that prevents wasting A*
-   budget on impossible tasks. Cheap; should slot in before each
-   `deliver_task`.
+AMC, DECrunchy, CphAirprt (×2), KUTitans — all require either
+component decomposition or a joint-search MAPF planner for tight
+rotation/swap configurations. Tracked on the [roadmap](#roadmap).
 
-3. **Component decomposition** (module `components.{hpp,cpp}`) — split
-   the level into connected components (walls-only), filter for
-   color-reachability, and solve each component in its own time budget.
-   Targets levels that currently time out on a single global task graph.
+### Universally hard
 
-4. **PIBT-during-delivery** — when single-box A* fails with
-   `blocked_by_agent` *and* the box's own corridor is clear, invoke
-   PIBT to break the deadlock instead of falling back to relocation.
-   Combines with #1.
+Planarchy, TriSplit, Nej, escAIpe, GroupWon, LoopBots, amogus, Apdo,
+DayBreak, WardRush — none of our solvers (legacy or v2) handles these
+dense-rotation puzzles; they need joint-search MAPF over ≤5 agents.
 
-5. **CBS-style box repair / push-pull macros** — for dense-rotation
-   levels where serial delivery can never order tasks correctly,
-   productionize the `AIMAS_ENHANCED_CBS_BOX_REPAIR` heuristic and add
-   macros for "push a box along a corridor" so joint planners can reason
-   about box motion.
+---
 
-## Environment flags
+## Configuration & limits
 
-None yet. v2 is designed so each future module is a plain code path,
-not a flag — flags only get added if they bisect a specific failure
-mode for debugging. (Compare to `cpp_enhanced` which has 15+ flags.)
+All limits are **compile-time constants** at the top of their owning
+function in `src/solver.cpp`. There are no runtime knobs.
+
+| Constant | Value | Where | Purpose |
+|---|---:|---|---|
+| `kMaxVariants` | 25 | `build_task_variants` | Cap on distinct task orderings tried |
+| `kMaxBoxesDp` | 12 | `build_tasks_matched_dp` | Bitmask-DP boxes/letter (else greedy) |
+| `kVariantBudgetSeconds` | 12.0 | `solve_once` | Per-variant wall-clock budget |
+| Expansion cap (single-box A\*) | 200 000 | `single_box.cpp` | Per A\* call |
+| Expansion cap (cooperative A\*) | 200 000 | `complete_agent_goals_reserved` | Per agent BFS |
+| Relocation snapshot attempts | 6 | `deliver_task_with_relocation` | Outer rounds per task |
+| Redelivery rounds | 3 | `solve_once` | Rescue passes after queue drains |
+
+The server's `--timeout` (30 s in our benchmarks) is the **total**
+wall-clock budget across all variants.
+
+---
 
 ## Tests
 
-`v2_tests` is a tiny zero-dependency harness (no GoogleTest, no
-Catch2). It uses a local `CHECK(...)` macro that exits 1 on failure so
-the test runner works in Release builds where `assert` is compiled out.
+Run with:
+
+```bash
+./searchclient_cpp_v2/build/v2_tests
+```
 
 Current coverage:
 
-- `action_table` — exactly 29 entries, correct counts per type
-- `parse_trivial` — single-agent single-cell level parses
-- `applicable_and_conflict` — Move applicability, wall blocking
-- `solver_trivial` — agent walks to its numeric goal
-- `solver_box` — agent pushes one box to one letter-goal
+- `applicable_and_conflict` — Move applicability, wall blocking,
+  vertex/edge conflict detection.
+- `solver_trivial` — an agent walks to its numeric goal.
+- `solver_box` — an agent pushes one box to one letter-goal.
+- `pibt_swap` — two agents must swap positions; PIBT resolves it.
 
-Edge-case tests to add as modules land: pull mechanics, swap conflict,
-box-box swap, same-letter goal disambiguation, color reachability,
-alt-agent retry, defer-on-failure.
+`v2_tests` is intentionally tiny — a 30-line `CHECK(...)` macro that
+exits 1 on failure, zero external dependencies, identical behaviour in
+Debug and Release.
 
-## Files & line counts
+---
 
-```
-include/aimas/core.hpp         ~120  public API
-src/core.cpp                   ~240  action table + State methods
-include/aimas/parser.hpp        ~10  parse_level signature
-src/parser.cpp                 ~160  level-file parser
-include/aimas/topology.hpp      ~40  Topology class
-src/topology.cpp               ~130  BFS distances, components
-include/aimas/single_box.hpp    ~50  SingleBoxAStar class
-src/single_box.cpp             ~250  A* on (agent, box) pairs
-include/aimas/solver.hpp        ~60  Solver class
-src/solver.cpp                 ~220  pipeline + alt-agent + defer
-src/main.cpp                   ~110  server protocol I/O
-tests/test_main.cpp            ~160  unit tests
+## Troubleshooting
+
+### Build fails on macOS with "unknown type name 'std::byte'"
+
+Force C++17:
+
+```bash
+cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build \
+      -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release
 ```
 
-Total: ~3 800 lines across 14 focused modules.
+### Client prints output but the server times out
 
-## Provenance
+Add `-t 30` (or larger) to the `java -jar misc/server.jar` line —
+without it the server's default timeout is short.
 
-- Action semantics, conflict detection, single-box A*, level parser:
-  ported faithfully from earlier single-file C++ iterations of this solver.
-- Pipeline shape (parse → search → emit, server protocol):
-  `searchclient_java/searchclient/`.
-- Algorithm references in `research_papers/`:
-  Okumura et al. 2019 (PIBT), Sharon et al. 2015 (CBS), Stern 2019
-  (MAPF survey), Cohen et al. 2018 (Anytime Bounded-Suboptimal),
-  and recent LMAPF works for Guided-PIBT.
+### Plan is much longer than expected
+
+Probably the level fell back to **serial** delivery / final phase
+(each step is one joint action with all-but-one `NoOp`). Look at the
+per-level log under `benchmarks/results/.../logs/` for which planner
+won the level. PIBT and cooperative A\* compress plans dramatically.
+
+### `Unable to solve level (in 30.0s)` on a benchmarked level
+
+Check `benchmarks/results/v2-bench-...-logs/<level>.log` for the last
+stderr line. Common reasons:
+
+- `Failed delivery for box X` — single-box A\* and all fallbacks
+  failed; usually a corridor blocked by a sibling box that the
+  current relocation depth (1) can't free.
+- `Failed final agent-goal phase` — PIBT, cooperative A\*, and
+  serial BFS all failed for the agent positioning. Often a swap that
+  needs joint-search MAPF.
+- `variant timeout` — one variant ate its 12 s budget; the next
+  variant is being tried.
+
+---
+
+## Roadmap
+
+In priority order; each item is a self-contained module that doesn't
+require re-architecting earlier modules.
+
+1. **Joint-search MAPF for ≤5 agents** (`joint_search.{hpp,cpp}`,
+   ~150 LOC) — joint A\* over the agent product state. Targets the
+   universally-hard rotation puzzles (Planarchy, TriSplit, Apdo,
+   escAIpe).
+2. **Component decomposition** (`components.{hpp,cpp}`, ~250 LOC) —
+   split the level into walls-only connected components and solve each
+   in its own time budget. Targets AMC, DECrunchy, KUTitans.
+3. **PIBT during delivery** (~250 LOC) — when single-box A\* fails
+   with `blocked_by_agent` and the box's own corridor is clear,
+   invoke PIBT to break the deadlock instead of relocation.
+4. **Push/pull macros** for joint planners — abstract "push box along
+   corridor" into a single action so joint A\* can reason about box
+   motion without paying for every push step.
+5. **Metadata feasibility prune** — per-cell reachability check that
+   prunes impossible tasks before A\* runs.
+
+---
+
+## License & references
+
+This client is course-project code for DTU 02285 Artificial
+Intelligence & Multi-Agent Systems. It builds on the official
+`searchclient_java` starter; reuses the server (`misc/server.jar`) and
+level files (`complevels/`, `complevels_2026/`) provided with the
+course.
+
+Algorithm references (PDFs in `research_papers/`):
+
+- Okumura, M., Machida, M., Défago, X., Tamura, Y. (2019).
+  *Priority Inheritance with Backtracking for Iterative Multi-agent
+  Path Finding.* IJCAI.
+- Silver, D. (2005). *Cooperative Pathfinding.* AIIDE.
+- Sharon, G., Stern, R., Felner, A., Sturtevant, N. (2015).
+  *Conflict-based search for optimal multi-agent pathfinding.*
+  Artificial Intelligence 219.
+- Stern, R. et al. (2019). *Multi-agent Pathfinding: Definitions,
+  Variants, and Benchmarks.* SoCS.
+- Cohen, L. et al. (2018). *Anytime Bounded-Suboptimal Search for
+  Multi-Agent Path Finding.* SoCS.
