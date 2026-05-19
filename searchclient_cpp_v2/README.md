@@ -1,19 +1,18 @@
 # searchclient_cpp_v2
 
 A clean modular C++17 rewrite of the MAPF-with-boxes search client for the
-AIMAS Hospital domain. Built from scratch on the same `searchclient_java`
+AIMAS Hospital domain. Built from scratch on the `searchclient_java`
 starter architecture (parse → state → search → emit), but factored into
-focused modules and using `searchclient_cpp_enhanced` as the behavioural
-oracle for domain semantics.
+focused modules with cleanly separated concerns for domain semantics,
+search, and orchestration.
 
 ## Why a rewrite?
 
-The original `searchclient_cpp` and the iteratively-enhanced
-`searchclient_cpp_enhanced` (~5 000 lines in a single file) work and
-together solve **62/116** of the level set. They got there by piling
-correctness fixes and feature flags on top of an early prototype.
+The original single-file C++ solvers (~5 000 lines) iteratively grew to
+solve **62/116** by piling correctness fixes and feature flags on top of
+an early prototype.
 
-`searchclient_cpp_v2` keeps the *semantics* that took the enhanced solver
+`searchclient_cpp_v2` keeps the *semantics* that took the earlier solver
 months to discover (action table, conflict detection, single-box A*
 mechanics, replay validation, transactional joint apply), but restructures
 the code into reviewable modules so future improvements (PIBT, CBS for
@@ -124,8 +123,8 @@ plan.
 
 | Build                                    | complevels | complevels_2026 | Total       |
 |------------------------------------------|------------|-----------------|-------------|
-| `searchclient_cpp` (legacy baseline)     |          – |               – | 56 / 116    |
-| `searchclient_cpp_enhanced`              |    27 / 47 |        35 / 69  | 62 / 116    |
+| Legacy single-file C++ baseline          |          – |               – | 56 / 116    |
+| Legacy single-file C++ (enhanced)        |    27 / 47 |        35 / 69  | 62 / 116    |
 | **`searchclient_cpp_v2` (r19, current)** |  **28/47** |       **45/69** | **73/116**  |
 | └ v2 baseline (single-box A* only, r4)   |    13 / 47 |        24 / 69  |   37 / 116  |
 | └ + alt-agent retry + defer (r5)         |    14 / 47 |        25 / 69  |   39 / 116  |
@@ -139,9 +138,7 @@ plan.
 | └ + DP-optimal task assignment (r19)     |    28 / 47 |        45 / 69  |   73 / 116  |
 
 See `benchmarks/results/v2-bench-*.csv` for per-level breakdowns. Each
-incremental layer in the v2 column is one self-contained code change;
-contrast with `cpp_enhanced` where the equivalent layers are intermixed
-in a single 5 000-line file behind environment flags.
+incremental layer in the v2 column is one self-contained code change.
 
 v2 r19 **exceeds** `cpp_enhanced`'s 62/116 by +11. v2 solves 16 levels
 `cpp_enhanced` doesn't (BigForty, ClosedAI, ComMAndos, Dracarys,
@@ -228,12 +225,12 @@ src/main.cpp                   ~110  server protocol I/O
 tests/test_main.cpp            ~160  unit tests
 ```
 
-Total: ~1 500 lines, vs ~5 000 in the single-file `cpp_enhanced`.
+Total: ~3 800 lines across 14 focused modules.
 
 ## Provenance
 
 - Action semantics, conflict detection, single-box A*, level parser:
-  ported faithfully from `searchclient_cpp_enhanced/src/main.cpp`.
+  ported faithfully from earlier single-file C++ iterations of this solver.
 - Pipeline shape (parse → search → emit, server protocol):
   `searchclient_java/searchclient/`.
 - Algorithm references in `research_papers/`:

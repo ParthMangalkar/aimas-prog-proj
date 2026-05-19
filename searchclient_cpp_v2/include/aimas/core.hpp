@@ -1,9 +1,8 @@
 // Core domain types for the AIMAS Hospital MAPF-with-boxes domain.
 //
-// Modular re-implementation of the foundational types from
-// searchclient_cpp_enhanced. Action semantics, applicability rules,
-// conflict detection, and the joint-action application contract are
-// preserved exactly so plans validate identically.
+// Modular re-implementation of the foundational types. Action semantics,
+// applicability rules, conflict detection, and the joint-action application
+// contract are preserved exactly so plans validate identically.
 //
 // Public surface:
 //   enum class ActionType   { NoOp, Move, Push, Pull }
