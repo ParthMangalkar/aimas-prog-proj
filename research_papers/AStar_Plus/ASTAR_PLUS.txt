@@ -1,0 +1,548 @@
+                                                                              Array 28 (2025) 100593
+
+
+                                                                   Contents lists available at ScienceDirect
+
+
+                                                                                      Array
+                                                      journal homepage: www.sciencedirect.com/journal/array
+
+
+
+
+A*-plus path planning algorithm for large-scale grid maps
+Chaosheng Zhang , Qingsen Hu *, Jiangang Tu , Yu Dong , Yizhong Tan , Yufeng He
+Professional Education and Field Training Base, Army Engineering University of PLA, Jiangsu, 221004, Xuzhou, China
+
+
+
+
+A R T I C L E I N F O                                     A B S T R A C T
+
+Keywords:                                                 The A* algorithm is widely recognized as one of the most effective solutions for grid-based path planning.
+Path planning                                             However, when it comes to complex obstacle fields, its performance significantly degrades on large-scale grid
+A* algorithm                                              maps exceeding 10,000 × 10,000 in size, where computational complexity and memory usage increase drasti­
+Grid map
+                                                          cally. To address these challenges and accelerate the path planning tasks, we propose the A*-plus algorithm,
+Algorithm optimization
+                                                          which introduces a node compression strategy by aggregating 2 × 2 grid cells into single nodes, thereby sub­
+                                                          stantially reducing the search space. Derived entirely from the A* framework, A*-plus is fully compatible with
+                                                          existing optimization techniques designed for A*, such as priority queues and heuristic functions. Experimental
+                                                          evaluations on 10,000 × 10,000 grid maps with varying obstacle densities show that A*-plus achieves a 93 %
+                                                          reduction in search time and a 60 % decrease in memory usage compared to the traditional A* algorithm,
+                                                          without compromising path optimality. These results demonstrate the effectiveness of A*-plus in enabling real-
+                                                          time path planning in expansive grid environments.
+
+
+
+
+1. Introduction                                                                                    Motivated by these limitations, this study proposes the A-plus algo­
+                                                                                               rithm*, which integrates map compression preprocessing, adaptive
+    Path planning plays a vital role in autonomous navigation, robotics,                       heuristic optimization, and search-space pruning to enhance path
+and intelligent transportation systems. With the increasing complexity                         planning efficiency under large-scale and complex environments. Unlike
+of real-world environments and the expansion of map scales, efficient                          the traditional A* method, A*-plus adopts a mechanism of compressing
+and reliable path planning algorithms have become essential for                                map nodes in a 2x2 pattern to reduce the number of searches, thereby
+ensuring real-time decision-making and safety in large-scale navigation                        demonstrating superior performance on large-scale maps. This
+tasks.                                                                                         improved strategy is at a very fundamental level and does not conflict
+    The classical A* algorithm, based on heuristic search, has long been                       with the mainstream methods currently in use, such as JPS and Bidi­
+the foundation of optimal path planning. However, as map resolution                            rectional A*. It can be combined with these methods to further enhance
+and environmental complexity grow, the computational cost of A* in­                            the speed of the search process.
+creases exponentially. This leads to performance degradation, particu­
+larly in large-scale or dynamic environments.                                                  2. Literature review
+    Numerous variants of A* have been proposed to improve computa­
+tional efficiency, such as Jump Point Search (JPS) [1], Bidirectional A*                           The A* algorithm, introduced by Hart et al., in 1968 [7], is a path
+[2], Hierarchical Path-Finding A* (HPA*) [3], and more recent hybrid                           planning algorithm that combines the principles of Dijkstra’s algorithm
+approaches combining heuristic refinement and parallel computing                               with heuristic search. Its core mechanism relies on an evaluation func­
+[4–6]. Although these methods reduce redundant searches and improve                            tion, f(n) = g(n) + h(n), which ensures both optimality and efficient
+scalability, they still face difficulties in balancing efficiency, memory                      pathfinding. However, when applied to large-scale grid maps, the search
+consumption, and global optimality in ultra-large-scale environments.                          space and computational complexity of A* increase rapidly, resulting in
+Especially when performing path planning multiple times within a very                          a sharp decline in efficiency [8].
+large static map, the repeated calculations will impose a huge compu­                              Grid maps are widely used in path planning research due to their
+tational load.                                                                                 simple structure and ease of implementation. In such maps, path
+
+
+ * Corresponding author.
+   E-mail addresses: cs116@163.com (C. Zhang), xuzhouhuqingsen@163.com (Q. Hu), 785100639@qq.com (J. Tu), 1251777548@qq.com (Y. Dong), tanyizhong@
+aeu.edu.cn (Y. Tan), victor02468@126.com (Y. He).
+
+https://doi.org/10.1016/j.array.2025.100593
+Received 13 June 2025; Received in revised form 21 October 2025; Accepted 19 November 2025
+Available online 1 December 2025
+2590-0056/© 2025 The Author(s). Published by Elsevier Inc. This is an open access article under the CC BY-NC license (http://creativecommons.org/licenses/by-
+nc/4.0/).
+C. Zhang et al.                                                                                                                                            Array 28 (2025) 100593
+
+
+planning algorithms aim to determine the optimal route from a start                          Table 2
+point to a destination by navigating through discrete grid cells [11].                       The drawbacks of six variants that improve the A* algorithm.
+However, as the scale of the map increases, the performance of tradi­                         Algorithm Name                 Drawback
+tional algorithms degrades significantly in terms of efficiency.
+                                                                                              Jump Point Search(JPS) [1]     Its efficiency drops significantly on non-uniform cost
+    To enhance the performance of the A* algorithm, various variants                                                         maps or highly cluttered environments where
+have been proposed. Table 1 presents six major improvement methods                                                           symmetry pruning is less effective.
+along with their principles.                                                                  Bidirectional A* [2]           It can be difficult to determine an effective meeting
+    We need to admit that these algorithms are all methods for speeding                                                      point and maintain consistent heuristics between the
+                                                                                                                             two search fronts.
+up path planning for large-scale maps, but each of them has some                              Hierarchical Path-Finding A*   The path optimality depends heavily on the quality
+drawbacks, as shown in Table 2.                                                                 (HPA*) [3]                   of the abstraction, and building or updating the
+    Additional improvements include enhanced heuristic functions,                                                            hierarchy adds preprocessing overhead.
+search space pruning, and path smoothing techniques [9]. For instance,                        A*, Landmarks, Triangle        Requires costly preprocessing and large memory to
+                                                                                                inequality(ALT) [4]          store landmark distances, making it less suitable for
+the EBS-A* algorithm incorporates extended distance metrics, bidirec­
+                                                                                                                             dynamic or frequently changing maps.
+tional search, and heuristic optimization to improve both efficiency and                      Multi-Resolution A*(MRA*)      Managing transitions between resolutions and
+robustness [10]. While these methods have enhanced the A* algorithm                            [5]                           maintaining path consistency can be complex and
+to some extent, they still face challenges in handling ultra-large maps,                                                     computationally expensive.
+particularly with respect to real-time performance.                                           Weighted-A* [6]                The use of an inflated heuristic sacrifices optimality
+                                                                                                                             guarantees and may produce paths that are longer
+    Apart from heuristic search methods, numerous studies have also                                                          than the true shortest route.
+employed meta-heuristic approaches to enhance or supplement path
+planning based on A*. Meta-heuristic algorithms such as genetic algo­
+rithms (GA) [14], particle swarm optimization (PSO) [15], ant colony                         the exponential growth of search time.
+optimization (ACO) [16], and simulated annealing (SA) [17] have been                            However, compressing four grid cells into one introduces a funda­
+used to address the limitations of A* in complex or large-scale envi­                        mental challenge: how to determine the traversability between adjacent
+ronments. Recent research trends have emphasized hybrid methods that                         compressed nodes. This issue is addressed in detail in Section 3.2.
+combine meta-heuristic global exploration with the efficiency of A*
+variants to achieve balanced performance in path planning. However, in                       3.2. Core principles of the A*-plus algorithm
+large-scale maps and tasks that require multiple path plans, the perfor­
+mance of these methods is still not very satisfactory.                                           The core idea of the A*-plus algorithm is to accelerate pathfinding on
+    To address this challenge, the A*-plus algorithm proposed in this                        large-scale maps by compressing every 2 × 2 group of grid cells into a
+study leverages map compression preprocessing, heuristic function                            single node. However, for these compressed nodes, the traversability
+optimization, and search space pruning. These strategies are designed to                     between neighboring blocks must be reconsidered. Unlike the tradi­
+enhance both the computational efficiency and the quality of path                            tional A* algorithm, which allows bidirectional movement as long as
+planning on large-scale grid maps.                                                           adjacent nodes are non-obstructed, A*-plus requires a new set of
+                                                                                             traversal rules due to the nature of node aggregation.
+3. Algorithm design                                                                              The A*-plus algorithm introduces several key rules for determining
+                                                                                             valid traversal.
+3.1. Overview of the A*-plus algorithm
+                                                                                             3.2.1. Mapping start and goal positions to compressed nodes
+    The A*-plus algorithm is an enhanced version of A* designed spe­                            For a 10,000 × 10,000 grid map, if the start point is located at (1, 2)
+cifically for large-scale maps, typically containing over 100 million                        and the goal at (10,000, 10,000), their respective compressed node co­
+nodes. As illustrated in Fig. 1, the core idea is to aggregate every 2 × 2                   ordinates become (1, 1) and (5000, 5000) after node aggregation.
+block of grid cells into a single compressed node. By redefining the ad­
+jacency relationships between these compressed nodes, the total number                       3.2.2. Directional search constraints using a 4 × 4 boolean table
+of nodes is reduced to one-fourth of the original, effectively preventing                         In traditional A*, direction tracking is unnecessary—search proceeds
+                                                                                             by simply checking whether neighboring cells are obstacle-free. As
+                                                                                             shown in Fig. 2(a), search is performed freely in four directions. How­
+Table 1
+                                                                                             ever, in A*-plus, as shown in Fig. 2(b), each red cell block represents a
+Six variants that improve upon the A* algorithm.
+                                                                                             compressed node and orange blocks indicate its neighbors. Travers­
+  Algorithm Name                 Principle                                                   ability is determined by whether any touching border cells between the
+  Jump Point Search(JPS) [1]     Accelerates A* on uniform-cost grids by skipping            red and orange blocks are non-obstructed.
+                                 symmetric and redundant nodes through directional                A special case is illustrated in Fig. 2(c), where diagonal obstacles
+                                 “jumping,” reducing the number of expansions
+                                                                                             impose directional constraints. For example, if the previous move was to
+                                 dramatically.
+  Bidirectional A* [2]           Performs simultaneous forward and backward                  the right, then subsequent moves to the right or upward may be blocked.
+                                 searches from the start and goal, meeting in the            Similarly, if the previous step was downward, movement to the left or
+                                 middle to shorten search depth and computation              down may also be restricted.
+                                 time.                                                            To enforce these rules, a 4 × 4 boolean matrix is used to represent
+  Hierarchical Path-Finding A*   Divides the map into clusters, builds an abstract
+    (HPA*) [3]                   graph of entrances, and plans first on the high-level
+                                                                                             directional access between nodes. The rows represent the direction of
+                                 graph before refining the path locally.                     the previous move (up, down, left, right), and the columns represent the
+  A*, Landmarks, Triangle        Enhances A* with precomputed distances to                   next move. A value of ‘1’ indicates the move is allowed, and ‘0’ indicates
+    inequality(ALT) [4]          selected landmarks and uses the triangle inequality         it is not. This matrix is shown in Fig. 3(a).
+                                 to derive tighter admissible heuristics.
+                                                                                                  Note that by default, round-trip movement is not allowed here. For
+  Multi-Resolution A*(MRA*)      Combines coarse and fine search resolutions, using a
+   [5]                           low-resolution grid for global exploration and high-        example, when it was moving upwards last time, the current node is not
+                                 resolution refinement near the final path.                  allowed to search downwards because searching for nodes in this way
+  Weighted-A* [6]                Speeds up A* by inflating the heuristic with a weight       would be repetitive. In the A*-plus algorithm, a ‘close list’ will also be set
+                                 factor greater than one, producing faster but               to record the searched nodes and prevent duplicate searches. Recording
+                                 potentially suboptimal paths.
+                                                                                             the bool table in this way can further simplify the search method. Fig. 3
+
+                                                                                         2
+C. Zhang et al.                                                                                                                      Array 28 (2025) 100593
+
+
+
+
+                                                       Fig. 1. Core concept of the A*-plus algorithm.
+
+
+
+
+                                                      Fig. 2. Core logic of node adjacency in A*-plus.
+
+
+
+
+                              Fig. 3. (a) Boolean matrix representation of directional rules (b) Example of matrix application.
+
+
+(b) is a simple example, where the matrix on the right corresponds to the         3.2.3. Double search in diagonal cases
+situation of the node on the left.                                                   In some cases, such as the path shown in Fig. 4, a single compressed
+                                                                                  node may need to be traversed twice, particularly when navigating
+                                                                                  diagonally. A*-plus permits this by allowing certain ‘diagonal’
+
+
+                                                                              3
+C. Zhang et al.                                                                                                                             Array 28 (2025) 100593
+
+
+                                                                                    3.2.6. Path backtracking method
+                                                                                        In the standard A* algorithm, the path is reconstructed by recording
+                                                                                    the parent of each visited node and backtracking from the goal node to
+                                                                                    the start node once the search is complete. This approach yields an exact
+                                                                                    path through individual grid cells. However, in the A*-plus algorithm,
+                                                                                    the initial backtracking process only yields a coarse path between
+                                                                                    compressed nodes. To achieve a precise path at the grid-cell level, an
+                                                                                    enhanced backtracking mechanism is required.
+                                                                                        As illustrated in Fig. 6, consider the scenario of moving horizontally
+                                                                                    from one compressed node to the next. In the straightforward case
+                                                                                    shown in Fig. 6(a), if the transition from the current node to the adjacent
+                                                                                    one is unobstructed, the algorithm directly traverses two grid cells to the
+                                                                                    right. In contrast, Fig. 6(b) depicts a case where the direct path is
+                                                                                    blocked. Here, the algorithm determines whether the current position
+                                                                                    lies in the upper or lower part of the compressed block. If in the upper
+                                                                                    section, it first moves one cell downward, then proceeds rightward. If in
+                                                                                    the lower section, it first moves upward before continuing to the right.
+           Fig. 4. Example of double search through diagonal nodes.                     This approach ensures that the final reconstructed path is both valid
+                                                                                    and precise, recovering an accurate step-by-step trajectory through the
+compressed nodes to be re-entered once during the search.                           original grid structure.
+
+
+3.2.4. Directional constraints at start and goal nodes                              3.2.7. Algorithm flowchart
+    Compressed nodes containing the start or goal point impose limita­                  To clearly illustrate the modifications of the A*-plus algorithm
+tions on entry and exit directions. As shown in Fig. 5, a start node may            compared to the traditional A* algorithm, we first present the flowchart
+only allow movement to the left and downward; and the goal may only                 of the standard A* algorithm, as shown in Fig. 7.
+be approached from the left or downward.                                                Fig. 8 presents the complete flowchart of the A*-plus algorithm,
+                                                                                    illustrating all components of its logic. Compared to the standard A*
+3.2.5. Priority queue search and heuristic optimization                             process shown in Fig. 1, A*-plus introduces several key modifications.
+     Designing the open list of the A* algorithm as a priority queue is one
+of the most common techniques to improve search efficiency [12].                     I. Preprocessing Step during Initialization:
+Typically, this is paired with a heuristic function to guide the search
+process and accelerate pathfinding [13]. Most heuristic strategies                      A*-plus includes a preprocessing phase in which all map nodes are
+developed for traditional A* can be directly applied to A*-plus without             transformed into compressed nodes. This step requires additional
+modification.                                                                       computation and the declaration of extra variables to store the com­
+     In this work, we adopt the Manhattan distance as the heuristic                 pressed node map. As a result, the initialization time of A*-plus is longer
+function. This is because the Manhattan distance is more applicable to              than that of the original A* algorithm. Additionally, a supplemental data
+the 4-adjacent grid (where movement is only allowed up, down, left, and             structure—referred to as the Half Closed List—is introduced.
+right). For each node i in the priority queue, its priority evaluation value
+fi is computed as shown in Equation (1):                                            II. Handling of Visited Nodes:
+
+fi = gi + whi                                                            (1)            When expanding the current best node, the algorithm distinguishes
+                                                                                    between regular and diagonal nodes. If the node is not a diagonal one, it
+where:                                                                              is directly moved to the Closed List. If it is a diagonal node and not yet in
+    gi is the actual cost to reach node i from the start node,                      the Half Closed List, it is added there instead. A second visit to a diagonal
+    hi is the estimated cost (heuristic) from node i to the goal node,              node triggers its transition from the Half Closed List to the Closed List.
+    w is a tunable weight that adjusts the influence of the heuristic.
+    The actual cost gi is the total path length accumulated to reach node i.           III. Neighbor Node Evaluation:
+    The heuristic cost hi is defined using the Manhattan distance to the
+goal node, as shown in Equation (2):                                                   During neighbor exploration, the allowable movement directions are
+     ⃒           ⃒ ⃒⃒            ⃒
+                                 ⃒                                                  constrained based on the previous movement direction of the current
+hi = ⃒xi − xgoal ⃒ + ⃒yi − ygoal ⃒                                      (2)
+                                                                                    node. This constraint is critical to maintaining consistency in directional
+   Here, (xi, yi) and (xgoal, ygoal) represent the coordinates of the current       transitions for compressed nodes.
+node and the goal node, respectively.
+                                                                                    3.2.8. Pseudo-code
+                                                                                       The A*-plus algorithm consists of two key components: the map
+                                                                                    preprocessing function and the A-plus path planning method*, for which
+                                                                                    the corresponding pseudocode is provided below.
+                                                                                       First, the preprocessing function takes as input a Boolean grid map,
+                                                                                    where 0 represents an obstacle and 1 represents a traversable cell. The
+                                                                                    output is a Boolean table of compressed nodes, where each compressed
+                                                                                    node contains 4 × 4 Boolean values indicating the allowable movement
+                                                                                    directions given the previous movement direction. The detailed imple­
+                                                                                    mentation is shown below.
+
+
+
+             Fig. 5. Directional constraints for start and goal nodes.
+
+                                                                                4
+C. Zhang et al.                                                                                                                                                    Array 28 (2025) 100593
+
+
+
+
+                                                  Fig. 6. Schematic diagram of the path backtracking mechanism in A*-plus.
+
+
+
+
+                                                                            Fig. 7. A* Algorithm flowchart.
+
+
+Algorithm 1                                                                                      Algorithm 2
+A*-plus Map Preprocessing Function                                                               A*-plus Map Path Planning Algorithm
+
+  Input: Map G                                                                                    Input: Map G, Compressed map Gc, start node s, goal node g
+    Output: Compressed map Gc                                                                       Output: Path P from s to g.
+  1. Initialize compressed map Gc as a 4D boolean array of size (L/2) £ (W/2) £ 4 £ 4,            1. Map the start node s to the compressed node sc, and the goal node g to gc. Initialize
+    where L and W are the length and width of the original map G.                                   the priority queue O = {sc} and the closed list C = ∅
+    2. For i = 1 to L/2:                                                                            2. While O is not empty:
+       For j = 1 to W/2:                                                                               (a) Extract the node n with the minimum f(n) ¼ g(n) þ h(n) from O.
+       (a) Group four adjacent nodes (2i− 1,2j− 1), (2i− 1,2j), (2i,2j− 1), (2i,2j) into a             (b) Move n from O to C.
+    compressed node (I,J).                                                                             (c) If n = g:
+       (b) For each direction k ¼ 1 to 4 (up, down, left, right):                                        Backtrack to obtain the compressed node path Pc;
+          For each direction h ¼ 1 to 4 (up, down, left, right):                                          Decode Pc to map G, to obtain the final path P;
+          If moving in direction k allows a next move in direction h:                                     Return P.
+             Set Gc(I,J,k,h) ¼ true;                                                                   (d) Determine the previous moving direction k (1–4 for up, down, left, right).
+          Else:                                                                                           If n is the start node, k can be arbitrary.
+             Set Gc(I,J,k,h) ¼ false.                                                                  (e) For each possible next direction h = 1 to 4:
+    3. Return Gc.                                                                                   Let the location of neighbor node m be (x,y).
+                                                                                                          If Gc(x,y,k,h) ¼ true:
+                                                                                                            Update m into O.
+                                                                                                    3.Return: Path planning failed.
+   Next, the core pseudocode of the A-plus path planning algorithm* is
+presented. It takes as input the original map, the compressed node map,
+the start coordinates, and the goal coordinates, and returns a feasible
+path. The implementation is detailed as follows.
+                                                                                                 3.3. Theoretical analysis of optimality and efficiency
+
+                                                                                                    We must acknowledge that the use of the A*-plus algorithm results in
+
+                                                                                             5
+C. Zhang et al.                                                                                                                     Array 28 (2025) 100593
+
+
+
+
+                                                          Fig. 8. A*-plus Algorithm flowchart.
+
+
+a slight reduction in path optimality. This is because the compression of       algorithm.
+nodes inevitably leads to the loss of some fine-grained path information.           However, the efficiency improvement achieved by A*-plus on large-
+As shown in Fig. 9 and (a) presents the optimal path generated by the           scale maps is highly significant. The time complexity of the traditional
+traditional A* algorithm, while Fig. 9(b) and (c) show the decoded path         A* algorithm is O(b^d × f(n)), where b is the average branching factor,
+obtained after path planning using compressed nodes in the A*-plus              d is the depth of the goal node, and f(n) denotes the complexity of the
+
+
+
+
+                                             Fig. 9. The deficiency of the path quality of A*-plus algorithm.
+
+                                                                            6
+C. Zhang et al.                                                                                                                       Array 28 (2025) 100593
+
+
+heuristic function. Under the same rules, goals, and heuristic conditions,           Initial Memory Usage: Memory consumed by data structures
+the A*-plus algorithm—by employing compressed nodes—reduces the                  created during preprocessing.
+time complexity to O(b^(d/2) × f(n)), thus providing a substantial                   Total Search Time: Cumulative time spent completing all path­
+computational advantage on large-scale maps.                                     finding tasks.
+                                                                                     Average Path Length: Mean length of the computed paths.
+4. Experimental design and performance evaluation                                    Peak Memory Usage: Maximum memory consumed during the
+                                                                                 execution of the algorithm.
+4.1. Objective
+                                                                                 4.5. Experimental results and analysis
+    The objective of this experiment is to evaluate the performance of the
+A*-plus algorithm in large-scale grid-based path planning. Specifically,             Firstly, the legality verification. After exporting the 10,000*10,000
+we aim to assess its advantages over the traditional A* algorithm in             map with a 15 % obstacle density, the map is drawn using Matlab, and
+terms of search efficiency, path quality, and resource consumption.              the path diagram obtained by the A*-plus algorithm is displayed, as
+    Since the improvements made by the A*-plus algorithm to the A*               shown in Fig. 9.
+algorithm are at a very fundamental level and can be combined with                   It can be seen from Fig. 10 that the path planning is effective. The
+other improvement strategies, the comparative experiments in this                enlarged figure shows that the path indeed avoids all obstacles.
+paper mainly focus on A* and A*-plus, as well as A* and A*-plus with the             Now, the path planned by the A*-plus algorithm is compared with
+Jump Point Search strategy incorporated. Similarly, for strategies such          the path planned by the A* algorithm. Similarly, we also compare the
+as HPA*, the A*-plus algorithm can also be combined with these                   path of the A* algorithm and the A*-plus algorithm under the JPS
+strategies.                                                                      strategy, as shown in Fig. 11.
+                                                                                     As can be seen from the figure, there are some minor differences in
+4.2. Experimental setup                                                          the path planning of A* algorithm and A*-plus algorithm. However, for a
+                                                                                 task that cannot move diagonally but can only move horizontally or
+    Hardware Configuration: Intel Core i7-14700 CPU, 32 GB RAM,                  vertically, the Manhattan distances they have traversed are the very
+Windows 11 OS.                                                                   close, so the paths are equivalent.
+    Software Platform: Visual Studio 2019 with C++ (compiled using                   The experimental results are summarized in Table 3.
+g++ 14.2.0)
+    Map Data: A 10,000 × 10,000 grid map generated with randomly                 4.5.1. Analysis
+distributed obstacles at a specific density.                                         The first two rows of Table 1 indicate that A*-plus incurs a signifi­
+                                                                                 cantly longer preprocessing time and higher initial memory usage
+4.3. Experimental plan                                                           compared to the traditional A* algorithm. This is expected, as A* only
+                                                                                 requires loading raw grid data, whereas A*-plus must preprocess the full
+    Compared Algorithms: A*algorithm, A*-plus algorithm, A* algo­                100-million-node map into a compressed representation, which involves
+rithm with JPS strategy and A*-plus algorithm with JPS strategy.                 additional computation and memory allocation.
+    Test Scenarios: Path planning tasks conducted under identical start              For dynamic maps, the update information must also be propagated
+and goal positions across maps with obstacle densities of 5 %, 10 %, and         to the compressed nodes of A*-plus, resulting in additional preprocess­
+15 %.                                                                            ing overhead. However, although the preprocessing phase of A*-plus
+    Execution Method: For each configuration, 1000 random path­                  consumes approximately seven times more time than that of A*, the path
+finding tasks are executed to obtain averaged results.                           planning phase of A*-plus achieves a 10–20 × improvement in efficiency
+                                                                                 compared with A*. Therefore, in tasks where path planning needs to be
+4.4. Evaluation metrics                                                          executed repeatedly or continuously under a largely static map, the
+                                                                                 preprocessing cost becomes amortized, leading to a significantly lower
+  Preprocessing Time: Total time spent reading and preprocessing the             overall time consumption for the entire task.
+map before search.                                                                   For obstacle densities of 5 %, 10 %, and 15 %, A*-plus generates
+
+
+
+
+                                                       Fig. 10. Legal path from A*-plus algorithm.
+
+                                                                             7
+C. Zhang et al.                                                                                                                        Array 28 (2025) 100593
+
+
+
+
+                                       Fig. 11. Path comparison chart of A*, A*-plus, A*-JPS and A*-plus-JPS algorithm.
+
+
+                                                                                  paths with lengths nearly identical to those produced by A*, confirming
+Table 3
+                                                                                  that it preserves path quality. More importantly, A*-plus achieves
+Performance comparison between A*, A*-plus, A*-JPS and A*-plus-JPS.
+                                                                                  approximately a 93 % reduction in search time and 60 % lower peak
+  Evaluation Metric         A*           A*-plus     A*-JPS      A*-plus-         memory usage across all tested scenarios. However, the paths generated
+                                                                 JPS
+                                                                                  by A*-plus are about 0.5 % longer than those of A*, as the use of com­
+  Preprocessing Time        40.643 s     281.818 s   –           –                pressed nodes slightly reduces search precision. These results demon­
+  Preprocessing Memory      18 MB        82 MB       –           –
+                                                                                  strate that A*-plus achieves significant computational efficiency gains
+  Avg. Path Length (5 %     6209.147     6213.873    6242.535    6249.802
+    obstacles)                                                                    while sacrificing only a minimal amount of path optimality.
+  Total Search Time (5 %    2855.065     150.831 s   2042.955    113.436 s            Theoretical analysis suggests that this improvement mainly stems
+    obstacles)              s                        s                            from the substantially smaller size of the priority queue. Due to node
+  Peak Memory Usage (5 %    347 MB       135 MB      254 MB      112 MB           compression, A*-plus processes roughly one-fourth as many nodes as A*,
+    obstacles)
+                                                                                  reducing both the frequency and computational cost of queue opera­
+  Avg. Path Length (10 %    6179.053     6196.034    6280.232    6299.351
+    obstacles)                                                                    tions, which leads to faster runtime and lower memory usage.
+  Total Search Time (10 %   5299.612     345.931 s   3515.477    246.119 s            Moreover, the results indicate that under all obstacle densities, the
+    obstacles)              s                        s                            standalone A*-plus algorithm provides better path quality and higher
+  Peak Memory Usage (10 %   358 MB       144 MB      256 MB      114 MB
+                                                                                  planning efficiency than using the JPS strategy alone. As obstacle den­
+    obstacles)
+  Avg. Path Length (15 %    6895.741     6929.412    6969.091    7021.338         sity increases, the efficiency of JPS decreases significantly—its speedup
+    obstacles)                                                                    drops from 1.4 × at 5 % density to 1.2 × at 15 % density, as more ob­
+  Total Search Time (15 %   7219.065     411.358 s   6012.043    353.963 s        stacles increase the number of jump points. Combining A*-plus with the
+    obstacles)              s                        s                            JPS strategy further improves search speed (by approximately 33 %) but
+  Peak Memory Usage (15 %   395 MB       162 MB      262 MB      114 MB
+                                                                                  also slightly reduces path optimality, producing paths about 2 % longer
+    obstacles)
+                                                                                  than the optimal result. Regardless of obstacle density, integrating JPS
+
+
+                                                                              8
+C. Zhang et al.                                                                                                                           Array 28 (2025) 100593
+
+
+reduces memory usage by around 30 %.                                                I. Loss of certain global optimization:
+   Overall, these findings confirm the effectiveness and efficiency of the
+A*-plus algorithm for large-scale grid map path planning. In practical                Although this compression node search method can roughly find the
+engineering applications, A*-plus is well suited for scenarios requiring           optimal path, it will lose certain globality within the compressed nodes.
+repeated path planning tasks, where it achieves substantial efficiency             As shown in Fig. 12, when the general trend is to the right and down­
+gains with only minimal loss in path quality. For cases demanding even             ward, the path planned by the A*plus algorithm still shows some upward
+higher efficiency and where slight degradation in optimality is accept­            movement situations. This is because, when the A*plus algorithm per­
+able, a combined approach integrating A*-plus with JPS or other                    forms the path decomposition of "moving one compressed node to the
+improvement strategies can provide an advanced and flexible solution.              right" during the path backtracking, it will prioritize "moving to the
+                                                                                   right" and may ignore the global downward movement requirement.
+5. Results and discussion
+                                                                                   II. Adaptability to Dynamic Environments:
+5.1. Summary of key findings
+                                                                                      The current algorithm is designed for static maps and lacks mecha­
+    The proposed A*-plus algorithm demonstrates significant advantages             nisms to handle dynamic changes, such as moving obstacles.
+in solving large-scale grid-based path planning problems. Compared to
+the traditional A* algorithm, A*-plus improves search efficiency by                  III. Three-Dimensional Path Planning:
+approximately 15–20 times. while maintaining path optimality. Addi­
+tionally, the number of expanded nodes and overall memory con­                        This study focuses exclusively on two-dimensional grid maps. The
+sumption are substantially reduced, indicating better utilization of               algorithm has not yet been extended to support 3D environments, which
+computational resources.                                                           limits its applicability to certain scenarios like aerial navigation.
+
+5.2. Comparison with existing research                                               IV. Validation in Real-World Systems:
+
+    When compared to other optimized algorithms such as Jump Point                     The experiments are currently limited to simulated environments.
+Search (JPS) and Hierarchical Path-Finding A* (HPA*), A*-plus shows                Real-world validation on physical robots or autonomous navigation
+superior performance on large-scale maps. JPS improves efficiency by               systems has not yet been conducted.
+skipping redundant nodes but is less effective in complex obstacle en­                 Future research may consider the following directions.
+vironments. HPA* reduces search space through hierarchical abstrac­
+tion, but the transition between layers may introduce path inaccuracies.            I. Take into account the overall trend of the path:
+    In contrast, A*-plus integrates multiple strategies—multi-level map
+abstraction, heuristic optimization, and directional search pru­                      When considering conducting local path planning within the
+ning—into a unified framework. This combination allows A*-plus to                  compression node, based on the global path trend, actively adjust the
+maintain path optimality while significantly accelerating the search               path direction.
+process, making it more suitable for high-performance path planning in
+expansive environments.                                                            II. Path Planning in Dynamic Environments:
+    Recent intelligent cooperative approaches employ deep learning and
+model aggregation techniques to achieve adaptive decision-making in                    For dynamic environments, it is not necessary to rebuild the entire
+dynamic UAV environments [18]. In contrast, the proposed A*-plus al­               compressed map when local changes occur. Instead, only the affected
+gorithm focuses on deterministic path search optimization, emphasizing             regions can be updated by synchronizing the modified parts of the
+computational efficiency and structural improvement rather than                    original map with their corresponding compressed nodes in the A*-plus
+data-driven learning. While AI-based cooperative frameworks provide                structure. Future research may further investigate the local propagation
+strong adaptability, they require extensive training and high computing            effects of such updates.
+resources.     A*-plus,    being     lightweight,     interpretable,     and
+resource-efficient, is more suitable for large-scale or static path planning         III. Extension to 3D Path Planning:
+tasks. These two directions are complementary, and future work may
+explore integrating A*-plus with intelligent cooperative frameworks to                 The compression and search principles of A*-plus can be generalized
+enhance adaptability in dynamic scenarios.                                         to three-dimensional voxel grids. Each 3D compression node would
+                                                                                   represent a volumetric region rather than a 2D block, and heuristic
+5.3. Interpretation and theoretical analysis                                       estimation could leverage 3D Euclidean or octile distance metrics. Given
+                                                                                   the computational scalability demonstrated in 2D, extending A*-plus to
+    The performance improvement of the A*-plus algorithm is primarily              3D environments (e.g., UAV or underground navigation) is conceptually
+attributed to its node compression mechanism. By aggregating each 2 ×              feasible and will be investigated in future work.
+2 group of grid cells into a single node, the effective map size is reduced
+to one-fourth of the original, thereby lowering the dimensionality of the            IV. System Integration and Field Testing:
+search space. This significantly reduces the size of the Open List, which
+in turn minimizes memory usage during execution.                                       Integrate A*-plus into actual robotic platforms or autonomous ve­
+    Moreover, since the Open List is implemented as a priority queue, a            hicles and evaluate its performance under real-world conditions.
+smaller number of nodes results in fewer comparisons when inserting                    Additionally, since A*-plus is fundamentally a variant of the A* al­
+new nodes. This reduction in comparison operations directly enhances               gorithm, it remains theoretically compatible with most existing A*
+the computational efficiency of the algorithm.                                     optimization strategies. Future work could explore the combination of
+                                                                                   A*-plus with other heuristic enhancements, pruning techniques, or data
+5.4. Limitations and future work                                                   structures to further boost its performance on large-scale maps.
+
+   Despite the promising results achieved by A*-plus in large-scale grid-
+based path planning, several limitations remain.
+
+                                                                               9
+C. Zhang et al.                                                                                                                                              Array 28 (2025) 100593
+
+
+
+
+                                                      Fig. 12. Global optimization limitation of A*-plus algorithm.
+
+
+CRediT authorship contribution statement                                                     [3] Kui Luchao, Yu Xianwen. A pathfinding algorithm for large-scale complex terrain
+                                                                                                 environments in the field. ISPRS Int J GeoInf 2024;13(7):251.
+                                                                                             [4] Peque Jr G, Urata J, Iryo T. Preprocessing parallelization for the ALT-Algorithm.
+    Chaosheng Zhang: Writing – original draft, Visualization, Project                            International conference on computational science. Cham: Springer International
+administration, Methodology, Funding acquisition, Formal analysis,                               Publishing; 2018. p. 89–101.
+Conceptualization. Qingsen Hu: Writing – review & editing, Investi­                          [5] Du Wei, Islam Fahad, Likhachev Maxim. Multi-resolution A. Proceedings of the
+                                                                                                 international symposium on combinatorial search, vol. 11; 2020. No. 1.
+gation, Data curation. Jiangang Tu: Writing – review & editing, Su­                          [6] Ebendt Rüdiger, Drechsler Rolf. Weighted A* search–unifying view and
+pervision, Funding acquisition. Yu Dong: Resources, Data curation.                               application. Artif Intell 2009;173(14):1310–42.
+Yizhong Tan: Data curation, Conceptualization. Yufeng He: Visuali­                           [7] Hart Peter E, Nilsson Nils J, Raphael Bertram. A formal basis for the heuristic
+                                                                                                 determination of minimum cost paths. IEEE Trans Syst Sci Cybern 1968;4(2):
+zation, Data curation.                                                                           100–7.
+                                                                                             [8] Hong Zhonghua, et al. Improved A-Star algorithm for long-distance off-road path
+Declaration of competing interest                                                                planning using terrain data map. ISPRS Int J GeoInf 2021;10(11):785.
+                                                                                             [9] Foead Daniel, et al. A systematic literature review of A* pathfinding. Procedia
+                                                                                                 Comput Sci 2021;179:507–14.
+    All the authors of article ‘A-plus Path Planning Algorithm for Large-                   [10] Wang Huanwei, et al. The EBS-A* algorithm: an improved A* algorithm for path
+Scale Grid Maps’ declare that they have no known competing financial                             planning. PLoS One 2022;17(2):e0263841.
+                                                                                            [11] Ou Yangqi, et al. Improved A* path planning method based on the grid map.
+interests or personal relationships that could have appeared to influence                        Sensors 2022;22(16):6198.
+the work reported in this paper.                                                            [12] Yodianto Wilsen, et al. Searching routing using A-Star (A*) search algorithm. 2024
+                                                                                                 3rd international conference on creative communication and innovative
+                                                                                                 technology (ICCIT). IEEE; 2024.
+Appendix A. Supplementary data
+                                                                                            [13] Zhang Jing, et al. Autonomous land vehicle path planning algorithm based on
+                                                                                                 improved heuristic function of A-Star. Int J Adv Rob Syst 2021;18(5):
+   Supplementary data to this article can be found online at https://doi.                        17298814211042730.
+org/10.1016/j.array.2025.100593.                                                            [14] Li Yibo, Dong Dingguang, Guo Xiaonan. Mobile robot path planning based on
+                                                                                                 improved genetic algorithm with A-star heuristic method. 2020 IEEE 9th joint
+                                                                                                 international information technology and artificial intelligence conference (ITAIC),
+Data availability                                                                                vol. 9. IEEE; 2020.
+                                                                                            [15] Zhang Lin, Zhang Yingjie, Li Yangfan. Mobile robot path planning based on
+                                                                                                 improved localized particle swarm optimization. IEEE Sens J 2020;21(5):6962–72.
+    Data will be made available on request.                                                 [16] Lan Xing, et al. Research on robot global path planning based on improved A-star
+                                                                                                 ant colony algorithm. In: 2021 IEEE 5th advanced information technology,
+References                                                                                       electronic and automation control conference (IAEAC). vol. 5. IEEE; 2021.
+                                                                                            [17] Gao Jianfeng, et al. Fast path planning for firefighting UAV based on A-Star
+                                                                                                 algorithm. J Phys Conf 2021;2029(1). IOP Publishing.
+ [1] Harabor Daniel, Grastien Alban. Improving jump point search. Proceedings of the
+                                                                                            [18] Zhou L, et al. Cooperative generative AI for UAV-based scenarios: an intelligent
+     international conference on automated planning and scheduling, vol. 24; 2014.
+                                                                                                 cooperative framework. IEEE Veh Technol Mag June 2025;20(2):44–52. https://
+ [2] Nannicini Giacomo, et al. Bidirectional A* search on time-dependent road
+                                                                                                 doi.org/10.1109/MVT.2025.3544817.
+     networks. Networks 2012;59(2):240–51.
+
+
+
+
+                                                                                       10
+

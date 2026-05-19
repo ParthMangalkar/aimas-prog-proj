@@ -1,0 +1,797 @@
+                                             Online Guidance Graph Optimization for Lifelong Multi-Agent Path Finding
+                                                                         Hongzhi Zang1 * , Yulun Zhang2 * , He Jiang2 , Zhe Chen3 ,
+                                                                           Daniel Harabor3 , Peter J. Stuckey3 , Jiaoyang Li2
+                                                        1
+                                                            Institute for Interdisciplinary Information Sciences, Tsinghua University, Beijing, 100084, China
+                                                                                              zanghz21@mails.tsinghua.edu.cn
+                                                                       2
+                                                                         Robotics Institute, Carnegie Mellon University, Pittsburgh, PA15213, USA
+                                                                                    {yulunzhang, hejiangrivers, jiaoyangli}@cmu.edu
+                                                              3
+                                                                Department of Data Science and AI, Monash University, Melbourne, 3800 VIC, Australia
+
+
+
+
+arXiv:2411.16506v1 [cs.MA] 25 Nov 2024
+                                                                                  {zhe.chen, daniel.harabor, peter.stuckey}@monash.edu
+
+                                                                                                                 0         500     1000       1500    2000     2500    3000     3500
+                                                                      Abstract
+                                           We study the problem of optimizing a guidance policy ca-
+                                           pable of dynamically guiding the agents for lifelong Multi-
+                                           Agent Path Finding based on real-time traffic patterns. Multi-
+                                           Agent Path Finding (MAPF) focuses on moving multiple
+                                           agents from their starts to goals without collisions. Its lifelong        (a) No guidance.     (b) Offline guidance. (c) Online guidance.
+                                           variant, LMAPF, continuously assigns new goals to agents.
+                                           In this work, we focus on improving the solution quality of          Figure 1: Comparison of no guidance, offline guidance
+                                           PIBT, a state-of-the-art rule-based LMAPF algorithm, by op-          (Zhang et al. 2024), and our online guidance with a simu-
+                                           timizing a policy to generate adaptive guidance. We design           lation of 5,000 timesteps with 600 agents in a warehouse
+                                           two pipelines to incorporate guidance in PIBT in two differ-
+                                                                                                                map of size 33 × 57 with 1,091 non-obstacle cells. The av-
+                                           ent ways. We demonstrate the superiority of the optimized
+                                           policy over both static guidance and human-designed poli-            erage and standard deviation of throughput over 10 simula-
+                                           cies. Additionally, we explore scenarios where task distribu-        tions for no guidance, offline guidance, and online guidance
+                                           tion changes over time, a challenging yet common situation           are 3.18 ± 0.04, 6.42 ± 0.09, and 8.66 ± 0.04, respectively.
+                                           in real-world applications that is rarely explored in the litera-    The heatmaps show the number of times the agents take wait
+                                           ture.                                                                action in each cell, approximating the level of congestion.
+                                                                                                                Our online guidance results in the most balanced traffic and
+                                                                                                                thus less congestion and higher throughput.
+                                                               1    Introduction
+                                         We study the problem of optimizing a guidance policy ca-
+                                         pable of dynamically updating guidance graphs with op-                 of agents, and limited planning time. For example, prior
+                                         timized edge weights to guide the agents’ movement and                 works (Zhang et al. 2023a,b) have shown that the throughput
+                                         improve throughput in lifelong Multi-Agent Path Finding.               of RHCR (Li et al. 2021b), a state-of-the-art replan-based
+                                         Multi-Agent Path Finding (MAPF) (Stern et al. 2019) aims               algorithm, drops dramatically to zero when the number of
+                                         to compute collision-free paths for agents from their starts to        agents exceeds 200 in a 33 × 36 warehouse map because of
+                                         goals. The lifelong variant of MAPF (LMAPF) constantly                 unrecoverable congestion. In comparison, real-world Ama-
+                                         assigns new goals to agents upon arriving at their current             zon fulfillment centers are reported to have more than 4,000
+                                         goals and aims to maximize throughput, namely the num-                 robots operating in areas spanning several football fields in
+                                         ber of goals reached per timestep. LMAPF has wide appli-               size (Brown 2022). Other works (Yu and Wolf 2023; Li et al.
+                                         cations in automated warehouses (Li et al. 2021b; Zhang                2021b) motivated by Amazon sortation centers use maps of
+                                         et al. 2023b,a) and game character control (Ma et al. 2017b;           size up to 179 × 69 and 1,000 agents.
+                                         Jansen and Sturtevant 2008).
+                                                                                                                   Meanwhile, the rule-based algorithms (Wang and Botea
+                                            Many algorithms have been proposed to solve LMAPF.
+                                                                                                                2008; Okumura et al. 2019; Yu and Wolf 2023) compute a
+                                         The replan-based algorithms (Ma et al. 2017a; Li et al.
+                                                                                                                shortest path or a shortest-distance heuristic for each agent
+                                         2020; Kou et al. 2020; Damani et al. 2021) decompose
+                                                                                                                without considering the collisions and use pre-defined rules
+                                         LMAPF into a series of MAPF problems and solve them se-
+                                                                                                                to resolve the collisions. Rule-based algorithms run very fast
+                                         quentially. Although replan-based algorithms possess high
+                                                                                                                and scale to extremely large maps and large numbers of
+                                         solution quality for small problems, they scale poorly
+                                                                                                                agents. Jiang et al. (2024) show that with a planning time
+                                         to real-world scenarios with large maps, large numbers
+                                                                                                                limit of 1 second per timestep, PIBT (Okumura et al. 2019),
+                                             * These authors contributed equally.                               a state-of-the-art rule-based algorithm, can handle maps as
+                                         Copyright © 2025, Association for the Advancement of Artificial        large as 140 × 500 with 54,320 empty vertices and as many
+                                         Intelligence (www.aaai.org). All rights reserved.                      as 10,000 agents.
+   However, rule-based algorithms have no guarantee on the       goal locations, LMAPF aims to move all agents from their
+solution quality. Zhang et al. (2024) have shown that with       start to their goal locations while avoiding collisions. Fur-
+150 agents, the throughput of RHCR is 24.2% better than          thermore, agents are constantly assigned new goals upon
+PIBT in a 33 × 36 warehouse map. To improve the solu-            reaching their current goals. At each timestep, agents may
+tion quality of rule-based algorithms, prior works (Zhang        either move to an adjacent vertex or remain stationary. Col-
+et al. 2024; Chen et al. 2024; Yu and Wolf 2023; Li and Sun      lisions happen when two agents are at the same vertex or
+2023) have explored providing guidance to the agents such        swap locations in the same timestep. The objective is to max-
+that they automatically avoid congested areas, thereby im-       imize throughput, defined as the average number of goals
+proving throughput. Most previous works adopt a static of-       reached per timestep.
+fline guidance, with the guidance graph (Zhang et al. 2024)
+providing a versatile and state-of-the-art representation of     LMAPF algorithms mainly include replan-based algo-
+guidance. The guidance graph is a directed weighted graph        rithms (Li et al. 2021b; Liu et al. 2019; Li et al. 2021b)
+with edge weights specifying the cost of moving and wait-        and rule-based algorithms (Wang and Botea 2008; Oku-
+ing for agents at different locations. Upon optimizing a guid-   mura et al. 2019; Yu and Wolf 2023). Replan-based algo-
+ance graph for PIBT, the throughput gap between PIBT and         rithms decompose the LMAPF problem into a sequence of
+RHCR is reduced to less than 4.2% (Zhang et al. 2024). Nev-      MAPF problems and rely on MAPF algorithms to solve
+ertheless, the offline nature of the guidance graph assumes      them. RHCR (Li et al. 2021b) is the state-of-the-art of this
+that the area of congestion does not change, an assumption       category. For every h timesteps, RHCR replans collision-
+that does not always hold in the real world. For example, in     free paths of all agents within a time window of w timesteps
+automated warehouses, task distribution can shift because of     (w ≥ h), ignoring collisions beyond it. While RHCR has
+changes in the distribution of orders.                           state-of-the-art throughput with a small number of agents in
+   Therefore, instead of optimizing an offline guidance graph    small graphs (or “maps” as we will refer to them later) (Li
+that provides static guidance, we optimize an online guid-       et al. 2021b), it scales poorly to instances with large numbers
+ance policy capable of adapting a dynamic guidance graph         of agents and limited planning time. Prior works have shown
+over time based on real-time traffic information to improve      that the throughput of RHCR drops to almost zero with more
+the throughput of PIBT-based LMAPF algorithms, the state-        than 200 agents in a 33 × 36 small warehouse (Zhang et al.
+of-the-art in rule-based LMAPF. Figure 1 shows the traffic       2023a,b) with a per-5-timestep planning time limit of 60
+congestion resulting from different guidance.                    seconds. Even with optimized guidance graph, Zhang et al.
+   To incorporate the online guidance policy into rule-based     (2024) shows that RHCR does not scale to more than 250
+LMAPF algorithms, we design two pipelines. One directly          agents in the same map.
+uses the guidance policy to dynamically generate guidance
+graphs based on real-time traffic information and replaces          Rule-based algorithms, on the other hand, run much faster
+uniform edge weights with the generated guidance graphs.         than replan-based ones at the expense of solution quality.
+The other uses the dynamically generated guidance graphs         Rule-based algorithms compute a shortest path or a short-
+to adaptively plan better guide paths and move the agents        est distance heuristic for each agent without considering the
+along the guide paths while resolving collisions. To opti-       collisions and leverage pre-defined rules to move the agents
+mize the guidance policy, we follow Zhang et al. (2024) in       while resolving collisions. PIBT (Okumura et al. 2019) is
+using Covariance Matrix Adaptation Evolutionary Strategy         the state-of-the-art of this category. Chen et al. (2024) show
+(CMA-ES) (Hansen 2016), a single-objective black-box op-         that the planning time of PIBT per timestep is over 150 times
+timization algorithm, to optimize the policy.                    faster than RHCR. Jiang et al. (2024) further show that PIBT
+   We make the following contributions: (1) We generalize        is currently the only existing algorithm that can handle a
+the offline, static guidance graph to an online, dynamic guid-   limited planning time of 1 second for up to 10, 000 agents.
+ance policy capable of updating the guidance graph based on      Therefore, we focus on improving the throughput of PIBT
+real-time traffic information. (2) We propose two methods to     using guidance.
+incorporate guidance policy into PIBT. (3) We address the        PIBT. PIBT maintains and adjusts a priority for each agent
+issue of dynamic task distribution, a critical concern in in-    and leverages a single-timestep rule to move agents. At
+dustrial settings. Our online guidance policy was tested in      each timestep, PIBT ranks each agent’s actions based on
+LMAPF simulations with both static and dynamic task dis-         the shortest distance from its next location to its goal, with
+tributions. The results demonstrate its advantages over of-      a preference for shorter distances. By default, an agent al-
+fline guidance with an improvement in throughput of up to        ways tries to follow its shortest path if no higher-priority
+30.75%, and over human-designed online guidance with an          agents act as obstacles. Otherwise, a lower-priority agent
+improvement of up to 52.42% across various maps and al-          needs to avoid collisions with higher-priority agents by tak-
+gorithms.                                                        ing the next preferred action. If a lower-priority agent fails
+                                                                 to avoid a collision, PIBT applies a backtracking mechanism
+        2   Preliminary and Related Work                         that forces higher-priority agents to take their next preferred
+                                                                 actions and retries all the movement until all agents can take
+2.1   LMAPF and LMAPF Algorithms                                 a collision-free action. Note that PIBT possesses favorable
+Definition 1 (Lifelong MAPF (LMAPF)) Given a graph               properties; for instance, it is complete for LMAPF on bi-
+G(V, E), a set of agents and their corresponding start and       connected graphs.
+2.2   Guidance in MAPF and LMAPF                                 online guidance. Yu and Wolf (2023) rely on a trained data-
+While not necessarily using the term “guidance”, the general     driven model to predict the movement delays of the agents
+idea of guiding agents’ movements is widely explored. Prior      and use the delays as the movement costs. However, predict-
+works fall into two categories, namely offline guidance that     ing delays is not directly related to throughput, which is the
+provides static guidance to the agents, and online guidance      objective of LMAPF.
+in which the guidance changes over time based on real-time
+traffic information.                                             2.3   Challenge of Online Guidance
+Offline Guidance. A static offline guidance usually lever-       Since online guidance is able to adapt the guidance on-the-
+ages edge directions or edge costs to encourage the agents       fly based on real-time traffic information, it should be able
+to move along certain edges. The pre-defined directions and      to provide better guidance for agents when the traffic pat-
+costs are generated in advance and are not updated dur-          tern shifts abruptly. For example, in automated warehouses
+ing the execution of the algorithm. Wang and Botea (2008)        in which robots are used to transport packages from one lo-
+leverages unidirectional edges in a graph to force the agents    cation to another, the distribution of packages might change
+to move in one direction, eliminating the head-to-head colli-    over time, resulting in different traffic patterns. In this case,
+sions. The idea of highway (Cohen, Uras, and Koenig 2015;        it is necessary to provide online guidance to agents.
+Cohen et al. 2016; Cohen 2020; Li and Sun 2023) pre-                 However, it is non-trivial to incorporate online guidance
+defines a subset of edges in the graph as highway-edges and      into LMAPF algorithms because of the computational over-
+encourages the agents to move along those edges.                 head of computing the heuristic values. And it is unavoid-
+   The state-of-the-art offline guidance is the guidance         able because PIBT requires the cost-to-go heuristic, which
+graph (Zhang et al. 2024). It unifies the representation of      is the shortest distance from the current locations to the goal
+guidance by using a directed weighted graph. The edge            locations, to plan agents’ actions. With an offline guidance
+weights of the guidance graph define the cost of moving and      graph, the heuristic values only need to be computed once at
+waiting for agents at different locations. The edge weights      the beginning. With an online guidance graph, however, the
+of the guidance graphs are optimized automatically either        heuristic values of the entire map need to be updated once
+directly using a single-objective derivative-free optimizer      the guidance graph is updated. To tackle this issue, a recent
+CMA-ES (Hansen 2016) or indirectly with Parameterized            work (Chen et al. 2024) proposes a variant of PIBT, referred
+Iterative Update (PIU), an iterative update procedure. Start-    to as Guided-PIBT (GPIBT).
+ing with a uniform guidance graph with all edge weights          GPIBT. GPIBT first plans a guide path for each agent that
+being 1, PIU runs the LMAPF simulator to collect the aver-       minimizes a handcrafted congestion cost equation, which
+age traffic information, which is used by a parameterized        takes other agents’ guide-path edge usage into account. It
+update model to update the guidance graph. The updated           then moves agents to their goals following the guide paths
+model is then optimized by CMA-ES for PIU to generate            and resolves collisions using PIBT. Since the heuristics that
+high-throughput guidance graphs.                                 guide agents to follow guide paths only need to be updated
+   In this work, we adopt the definition of guidance graphs      while agents are assigned with new goal, GPIBT reduces the
+from previous work (Zhang et al. 2024), with slight rephras-     computational overhead of heuristic computation. However,
+ing.                                                             since the guide paths are not updated until the agents reach
+Definition 2 (Guidance Graph) Given a graph G(V, E), a           their current goals, GPIBT is less flexible than PIBT in terms
+guidance graph is a directed weighted graph Gg (Vg , Eg , ω),    of the paths that the agents eventually take to reach the goals.
+where Vg = V , and Eg = {(u, v)|u, v ∈ V } encodes the ac-           Given the state-of-the-art performance of PIBT and
+tion costs in every single vertex, including moving and wait-    GPIBT, we focus on incorporating automatically optimized
+ing, for all agents. The action costs are represented collec-    online guidance in them, thereby improving their perfor-
+                                    |E |                         mance in our work.
+tively as the edge weights ω ∈ R>0g .
+Online Guidance. Online guidance is able to adapt the guid-                             3    Approach
+ance based on real-time traffic information during the execu-
+tion of the LMAPF algorithm. Jansen and Sturtevant (2008)        We introduce the policy for generating dynamic guidance,
+assigns a direction vector to each location in the graph and     defined in Definition 3. We then discuss the integration of
+encourages the agents to move along the direction vector by      guidance policies with PIBT-based LMAPF algorithms in
+setting the movement cost of that location to be inversely re-   Section 3.1. We finally elaborate on the optimization of a
+lated to the dot product of the direction vector and the edge    guidance policy in Section 3.2.
+cost. The direction vectors are computed from the past traf-     Definition 3 (Guidance Policy) Given a guidance graph
+fic information by using a handcrafted equation. Han and Yu      G(Vg , Eg , ω), a guidance policy is a function πθ : O →
+(2022) compute a handcrafted temporal heuristic function to        |E |                                                |E |
+                                                                 R>0g that computes the updated edge weights ω ′ ∈ R>0g
+estimate the movement cost, guiding the agents’ movement.
+                                                                 given the observation o ∈ O collected in a LMAPF simula-
+Similarly, Chen et al. (2024) and Skrynnik et al. (2024)
+                                                                 tion. The policy πθ is parameterized by θ ∈ Θ, where Θ is
+collect the planned paths of all agents and use handcrafted
+                                                                 the space of all parameters.
+equations to compute the movement costs. The above meth-
+ods rely solely on handcrafted functions, which demand sig-        Depending on the LMAPF algorithm, the observation of
+nificant human effort and greatly limit the effectiveness of     guidance policy consists of one or more past traffic patterns,
+                                                                 at their current location due to the existence of self-edges on
+                                                                 the guidance graph. Admittedly, the heuristics table needs
+                                                                 to be updated every time the guidance graph is updated,
+                                                                 thereby making the LMAPF algorithm more computation-
+               Update current goals + edge usage                 ally expensive. During implementation, we use techniques
+                                                                 to reduce recomputation costs. Since the guidance graph up-
+                                                                 dates frequently, calculating the shortest paths for all vertex
+                                                                 pairs often results in unnecessary computations. Within one
+                                                                 update interval, agents have a limited number of goal lo-
+                                                                 cations, and it is likely that some locations on the map are
+                                                                 never visited by any agents. Instead of computing the short-
+                                                                 est distances for all vertex pairs, we refer (Silver 2005) and
+                                                                 use a lazy mechanism. Each agent maintains a search tree
+                                                                 rooted at its goal location. When the shortest distance at a
+                                                                 location is queried, the tree expands until it finds this loca-
+                                                                 tion, saving a lot of unnecessary computation.
+
+Figure 2: Overview of incorporating guidance policy with                              Initialize to 0
+
+Direct Planning algorithms like PIBT.
+                                                                   Update guide-path
+                                                                      edge usage
+the current distribution of tasks, and future planned paths.
+We discuss the choice of observation in Section 3.1.
+                                                                                  Agents with
+                                                                                   new goals
+3.1   Incorporating Guidance Policy
+Here, we discuss two ways of using guidance graphs and                                                         Follow guide paths
+guidance policies in LMAPF algorithms.                                                                           for 1 timestep
+Direct Planning. Most LMAPF algorithms directly plan
+on the guidance graph by minimizing the sum of action
+costs encoded in the guidance graph. PIBT (Okumura et al.
+2019) falls into this category. Figure 2 shows the overview
+of this method. Starting from a uniform guidance graph with                                 Plan guide path         Reﬁne guide
+                                                                                              for 1 agent          paths via LNS
+all weights being 1, we run the LMAPF algorithm for m
+                                                                      Reﬁne and move along guide paths
+timesteps. After m timesteps, we obtain the edge usage (i.e.,
+                                                                      Plan guide paths for agents with new goals
+the number of timesteps that each edge in Eg is used by
+some agent) of the past m timesteps and the currently as-
+signed goals of the agents. The edge usage reflects the recent   Figure 3: Overview of incorporating guidance policy with
+traffic information, and the current goals project the future    Guide-Path Planning algorithms like GPIBT.
+possible congestion locations. Upon obtaining the edge us-
+age and current goals, we use the guidance policy to update      Guide-Path Planning.
+the guidance graph, starting a new iteration.                       Given the heavy computational overhead of repeatedly
+   Since we end the LMAPF simulation after N timesteps,          computing heuristic tables or trees, another approach is to
+                                    N
+we run the above procedure for ⌊ m    ⌋ iterations. By choos-    use guide paths. Figure 3 shows the overview.
+ing m, we control the trade-off between the adaptability of         We generally follow the GPIBT framework (Chen et al.
+the online updated guidance graph and additional computa-        2024) but modify the guide-path generation process. At each
+tional costs associated with the online update mechanism.        timestep, GPIBT plans guide paths for each agent assigned
+This is because we need to maintain a heuristic table that       a new goal in a sequential manner (yellow loop). It may then
+contains the shortest path length between every pair of ver-     use Large Neighborhood Search (LNS) (Li et al. 2021a) to
+tices on the guidance graph, which is used for PIBT to rank      refine the guide paths for some randomly selected agents.
+the actions for every agent at every timestep. We make a         Finally, each agent moves in a PIBT style, ranking its neigh-
+slight change here: instead of PIBT ranking neighbors by         bors according to the distance on the original graph (instead
+the shortest distance from each neighbor to the goal loca-       of the guidance graph) to their guide paths (red loop). This
+tion, we follow (Zhang et al. 2024) and rank the neighbors       procedure is repeated for N timesteps.
+by the sum of the action cost from the current location to the      We incorporate our guidance policy during guide-path
+neighbors (including itself) and the distance from the neigh-    generation. The guide paths for agents are the shortest paths
+bors to the goal. That is because, with the guidance graph,      from their previous goal locations to their current goal loca-
+the cost from the current location to the neighbors varies.      tions on the guidance graph. After planning guide paths for
+Additionally, this approach allows agents to choose to stay      each agent, the guidance graph updates. GPIBT originally
+uses a handcrafted equation to compute the guidance graph          with dynamic task distribution. We also compare the run-
+weights based on all agents’ guide-path edge usage. In our         time of all algorithms. Then, we present results for guidance
+method, We replace this equation with our guidance policy.         policies for GPIBT with LNS. Furthermore, we demonstrate
+   The guide-path edge usage is initialized to 0 and updated       that our approach mitigates deadlock issues in PIBT-based
+whenever any agent’s guide path changes. This approach             algorithms.
+combines past and future traffic information, as each agent        Maps. We conduct experiments on 4 maps: (1) sortation-33-
+follows its guide path from its previous goal to its current       57, (2) warehouse-33-57, (3) empty-32-32, and (4) random-
+location and will continue following its guide path until the      32-32, shown on top of Figure 4. The first two have regular
+agent reaches its current goal (with possible temporary devi-      patterns and are used to test MAPF algorithms in automated
+ations to avoid collisions), at which point a new guide path       warehouses settings. Specifically, the sortation map is the
+is generated to guide it to its next goal.                         same as in (Chen et al. 2024) and the warehouse map is gen-
+   Note that for GPIBT, the guidance graph is only used to         erated by us. The latter two are selected from the MAPF
+compute the guide paths, and there is never a “wait” action        benchmark (Stern et al. 2019).
+on the guide paths. Therefore, there is no need to incorporate     Task Generation. As shown at the top of Figure 4, the sor-
+self-edges on the guidance graph.                                  tation and warehouse maps have workstations (pink) and
+   Compared to direct planning, guide-path planning min-           endpoints (blue). Each agent’s goals constantly alternate be-
+imizes the effort on heuristic updates because it does not         tween the workstations and the endpoints, simulating the
+maintain the pairwise distances between vertices. It only          warehousing scenario in which robots pick up items from the
+computes the agents’ guide paths once when an agent is as-         workstations and drop them off in chutes or shelves (black)
+signed a goal. If agents deviate from their guide paths, they      reachable from the endpoints in the middle. For empty and
+do not plan new paths but try to return to the guide paths,        random maps, goals are sampled from empty spaces (white).
+which is much less computationally intensive.                      Task Distribution. We consider both static and dynamic
+                                                                   task distributions. Static task distribution samples goals uni-
+3.2   Guidance Policy Optimization                                 formly, the most common setting in previous works (Chen
+We aim to optimize the parameter θ of the guidance pol-            et al. 2024; Zhang et al. 2023b,a). For the dynamic task
+icy πθ to maximize the throughput given by the LMAPF               distribution, goals are sampled from the Gaussian or multi-
+simulators. Following Zhang et al. (2024), we use CMA-             mode Gaussian distribution, where the Gaussian centers
+ES (Hansen 2016), a single-objective derivative-free opti-         change for every 200 timesteps. Concretely, in sortation and
+mization algorithm, to optimize θ. CMA-ES maintains a              warehouse maps, goals on endpoints are sampled from a
+multi-variate Gaussian distribution to represent the distribu-     Gaussian distribution, and goals on workstations are sam-
+tion of solutions. Starting with a standard normal Gaussian,       pled uniformly. For empty and random maps, goals are sam-
+CMA-ES samples a batch of b parameter vectors θ, forming           pled from a multi-mode Gaussian distribution with K Gaus-
+b guidance policies. It then evaluates these guidance policies     sian centers. The hyper-parameters for the distribution are
+by running the given LMAPF simulator Ne times to com-              provided in Table 2 in Appendix A.1.
+pute the average throughput. Finally, based on the evaluated       Algorithm Comparison. We compare 6 algorithms, each
+guidance policies, CMA-ES updates the parameters of the            with a different LMAPF solver or guidance approach.
+Gaussian towards the high-throughput region of the search          on+PIBT our proposed online guidance policy applied to
+space. CMA-ES repeats the above procedure until the num-               PIBT. We optimize an online guidance policy, periodi-
+ber of guidance policy evaluations reaches Neval . We in-              cally call it to update the guidance graph, and directly
+clude information on the selection of CMA-ES-related hy-               plan on the guidance graph.
+perparameters in Appendix A.1.                                     off+PIBT PIBT with an offline guidance graph, optimized
+   Note that if the dimension of θ is too large, it becomes dif-       using PIU (Zhang et al. 2024).
+ficult for CMA-ES to optimize. Therefore, we use a Convo-          on+GPIBT our proposed online guidance policy applied to
+lutional Neural Network(CNN) for PIBT with 3,119 param-                GPIBT. We optimize an online guidance policy and call
+eters and a specialized windowed quadratic network with                it when each agent plans its guide path.
+560 parameters. Detailed information can be found in Ap-
+                                                                   [p-on]+GPIBT GPIBT with periodically updated guidance
+pendices A.2 and A.3. Admittedly, the design of our cur-
+                                                                       graph. We use the same pipeline as on+PIBT. The inputs
+rent guidance policy architecture can only handle 4-neighbor
+                                                                       of online policy are past traffic and current goals instead
+grids instead of general graphs. However, 4-neighbor grids
+                                                                       of guide-path information. We present the results of this
+are currently the main focus of the community. Moreover,
+                                                                       algorithm to show the advantages of on+GPIBT.
+the concept of applying the guidance policy is not limited to
+the current network structures.                                    off+GPIBT GPIBT with an offline guidance graph, opti-
+                                                                       mized using PIU (Zhang et al. 2024). The guide paths
+                                                                       are generated according to the optimized offline guidance
+           4    Experiments and Analysis                               graph.
+4.1   Experiment Setup                                             hm+GPIBT the original GPIBT that uses a human-
+We conduct experiments comparing online and offline guid-              designed equation as the guidance policy (Chen et al.
+ance, optimized guidance policies versus human-designed                2024). Specifically, we compute ω using the SUM OVC
+guidance policies, and the advantages of online guidance               function (Chen et al. 2024), where each weight is the
+                         sortation-s                      warehouse-s                          empty-s                          random-s
+                                                                                                                     10
+              15                               8                                  20
+                                                                                                                      8
+                                               6
+              10                                                                  15
+                                                                                                                      6
+                                               4
+                                                                                  10                                  4
+
+
+
+
+ throughput
+               5                               2
+                   400      800        1200        200         600         1000        200   400   600     800            200    400     600   800
+                         sortation-d                      warehouse-d                          empty-d                          random-d
+                                               5                                                                      5
+                                                                                  10
+               8
+                                               4                                                                      4
+                                                                                   8
+               6                               3
+                                                                                                                      3
+                                                                                   6
+               4                               2
+                   400      800        1200        200   400               1000        200   400   600     800            200    400     600   800
+                                                                        num of agent
+                             on+PIBT          off+PIBT          on+GPIBT           hm+GPIBT              off+GPIBT        [p-on]+GPIBT
+
+
+Figure 4: Throughput with different numbers of agents. The black vertical lines show the number of agents that are used to
+optimize the guidance policies. The solid line shows the average throughput over 50 LMAPF simulations, and the shaded areas
+denote the 95% confidence interval. “s” and “d” stand for static and dynamic task distribution, respectively.
+
+
+         sum of the guide-path vertex usage and the product of                    Online vs. Offline Guidance. We first compare our on-
+         the head-on-head guide-path edge usage.                                  line guidance policy with the offline guidance graph (Zhang
+                                                                                  et al. 2024) under static task distributions. That is, we fo-
+   Note that for the PIBT-based algorithms, we used the
+                                                                                  cus on comparisons between on+PIBT with off+PIBT and
+“swap” technique mentioned in (Okumura 2023). This is
+                                                                                  on+GPIBT with off+GPIBT in the first row of Figure 4. Un-
+necessary because vanilla PIBT is only deadlock-free on bi-
+                                                                                  der most settings, on+PIBT and on+GPIBT generally match
+directed graphs, and the random map does not meet this cri-
+                                                                                  or outperform off+PIBT and off+PIBT throughout differ-
+terion. However, with the “swap” technique, the deadlock
+                                                                                  ent numbers of agents, respectively. However, in the sorta-
+issue can be mitigated on most maps. Additionally, unless
+                                                                                  tion map with static task distribution, on+PIBT is (slightly)
+specifically mentioned, we do not include LNS in the main
+                                                                                  worse than off+PIBT because congested locations do not
+results for all GPIBT-based algorithms, which limits their
+                                                                                  change a lot over time. Therefore, a well-optimized offline
+performance. In one of the following subsections, we present
+                                                                                  guidance graph can alleviate congestion well enough. Be-
+the results with LNS included.
+                                                                                  sides, there exist outliers on some number of agents because
+   We run all LMAPF algorithms for N = 1, 000 timesteps.                          our model is not directly optimized for these cases.
+In on+PIBT and [p-on]+GPIBT, we update the guidance
+graph for every m = 20 timesteps. The CPU runtime for all                         Static vs. Dynamic Task Distribution. We expect that
+algorithms is measured on a local machine with a 64-core                          dynamic task distribution gives more advantages to online
+AMD Ryzen Threadripper 3990X CPU, 192 GB of RAM,                                  guidance over offline guidance because the guidance pol-
+and an Nvidia RTX 3090Ti GPU. More compute resource                               icy can dynamically change the guidance graph based on
+information can be found in Appendix A.4. For relevant soft-                      real-time traffic information, which depends on the task dis-
+ware libraries, see Appendix A.5.                                                 tribution. Clearly in Figure 4, by comparing on+PIBT with
+                                                                                  off+PIBT, our online guidance policy is more advantageous
+                                                                                  than the offline guidance graph when moving from static
+4.2            Experiment Results                                                 to dynamic task distributions. However, the improvement
+Figure 4 compares the throughput of different algorithms. To                      ratio of on+GPIBT over off+GPIBT does not consistently
+show the generalizability of our approach, we optimize the                        increase when moving from static to dynamic task distri-
+guidance policies and guidance graphs with the numbers of                         butions. This is because the difference between on+GPIBT
+agents indicated by the black vertical lines. We then evaluate                    and off+GPIBT goes beyond simply online vs. offline:
+them with various numbers of agents. We highlight several                         on+GPIBT generates the guidance graph based on the cur-
+key findings below.                                                               rent guide paths, meaning that a new guide path is more
+  likely to avoid areas frequently used by the guide paths of          CMA-ES hyper-parameters are kept the same as in the main
+  other agents, while off-GPIBT uses a static guidance graph,          results.
+  providing no incentive to generate guide paths that avoid               Figure 5 shows the throughput-agents curve with LNS
+  congestion with other guide paths. To isolate the impact             experiments. The results include on+GPIBT+LNS,
+  of the online mechanism alone, we compare [p-on]+GPIBT               off+GPIBT+LNS, hm+GPIBT+LNS, as well as
+  against off+GPIBT, where neither algorithm uses guide-path           on+GPIBT+LNS(eval). We optimize the first three
+  information to generate guidance graphs. In this case, the           guidance policies or guidance graphs with LNS included
+  improvement ratio consistently increases while moving from           in the optimization loop. For on+GPIBT+LNS(eval), we
+  static to dynamic task distributions. In addition, the compar-       use the on+GPIBT guidance policy and incorporate LNS
+  ison between on+GPIBT with [p-on]+GPIBT shows the ef-                specifically during the evaluation phase.
+  fectiveness of using guide-path information.                            Comparing on+GPIBT with on+GPIBT+LNS and
+  Optimized vs. Handcrafted Online Guidance.                 We        on+GPINT+LNS(eval) shows that LNS substan-
+  also compare our optimized online guidance policy to a               tially improves the throughput. The throughputs of
+  human-designed guidance policy (Chen et al. 2024). As                on+GPIBT+LNS,           on+GPIBT+LNS(eval),        and    the
+  shown in Figure 4, the comparison between on+GPIBT with              hm+GPIBT+LNS all dominate that of off+GPIBT+LNS,
+  hm+GPIBT shows the advantage of our optimized guidance               indicating that under the LNS setting, all online methods are
+  policy over the human-designed guidance policy on GPIBT.             better than the offline method. The on+GPIBT+LNS(eval)
+  We are unaware of any human-designed online guidance                 policy ranks as the second best, only outperformed by the
+  policy for PIBT.                                                     on+GPIBT+LNS approach. This result demonstrates the
+  Runtime. Admittedly, online mechanisms incur more com-               generalizability of our guidance policy, which is capable of
+  putational overhead. on+PIBT is up to 4 times slower than            sidestepping the costly optimization of guidance policies
+  off+PIBT due to the need to recompute the heuristic tables.          with LNS. Interestingly, the improvement of on+GPIBT
+  on+GPIBT is up to 7 times slower than hm+GPIBT and                   over off+GPIBT is larger than off+GPIBT+LNS over
+  off+GPIBT due to the need to update the guidance graph               off+GPIBT, indicating that the online mechanism is more
+  every time an agent replans its guide path. However, this            helpful than LNS. That is because off+GPIBT ignores other
+  runtime overhead is often acceptable in practice, as the aver-       agents’ guide-paths. LNS only helps when an agent deviates
+  age runtime per timestep never exceeds 0.026 seconds across          from its guide path, replanning the agent’s guide path from
+  all experiments for all algorithms, which is fast enough for         the deviated location instead of continuing to follow the
+  realistic settings. Besides, on average, on+PIBT algorithms          previously planned guide path. However, ignoring other
+  are two to three times slower than on+GPIBT algorithms be-           agents’ guide paths cannot lead to higher throughput.
+  cause on+GPIBT uses the guide-path mechanism to reduce                  All LNS-based algorithms are much slower than the algo-
+  the computational overhead of heuristics. Numerical results          rithms without LNS (Table 3). However, the runtime is still
+  for runtime can be found in Appendix B.1.                            acceptable. The most expensive one (on+GPIBT+LNS on
+                                                                       static task distribution) is only 0.042 seconds per timestep.
+              on+GPIBT          on+GPIBT+LNS      hm+GPIBT+LNS         Table 4 in Appendix B.1 shows the numerical results.
+              off+GPIBT         off+GPIBT+LNS     on+GPIBT+LNS(eval)   Online Guidance and Deadlocks. We discovered that
+                   warehouse-s                  warehouse-d            our online mechanism can also mitigate deadlock issues
+         8                               5                             of PIBT. For the results in Figure 4, we used a deadlock-
+
+
+throughput
+                                                                       free version of PIBT with the “swap” technique (Oku-
+         6                               4                             mura 2023) because the vanilla version of PIBT (without
+                                         3                             the “swap” technique, denoted as PIBT(vanilla)) encoun-
+         4                                                             ters deadlocks in maps with dead-ends (Okumura et al.
+             200          600      1000 200 400               1000     2019). The random map is an example. Both PIBT(vanilla)
+                                 num of agent                          and off+PIBT(vanilla) suffer from deadlocks. However,
+                                                                       on+PIBT(vanilla) can automatically recover because the
+                     Figure 5: GPIBT with LNS results.                 guidance graph and heuristics are updated periodically. If a
+                                                                       deadlock occurs, the past traffic information directs our on-
+  GPIBT with LNS. Section 3 mentioned that the GPIBT-                  line guidance policy to generate a guidance graph with high
+  based methods can incorporate LNS to improve the quality             edge weights at the deadlock area, helping agents escape
+  of guide paths and further enhance throughput. LNS refines           from deadlocks. Appendix B.3 shows visualization results
+  agents’ guide paths with an iterative procedure. In each LNS         for deadlocks.
+  iteration, ng agents are selected to replan their guide paths        Ablation Results. Additional results for the guidance up-
+  from their current locations. If the new sum of all agents’          date interval m for on+PIBT in Appendix B.2.
+  guide-path lengths on the guidance graph is smaller, LNS
+  accepts the new guide-paths. At each timestep, LNS is ter-           4.3   Guidance Policy Visualization
+  minated either if it exceeds Niter iterations or if runs for
+  more than tLN S seconds. We focus on the warehouse map               In this section, we expand on earlier hypotheses and explain
+  with both static and dynamic task distribution. LNS hyper-           some results mentioned before by visualizing the guidance
+  parameters are set as Niter = 10, ng = 10, and tLN S = 8.            graph given by on+PIBT.
+   0      200 400 0            20   40     60      80 100          and thus lead to different performances in throughput. In
+                                                                   warehouse, the white space between workstations (pink) and
+                                                                   endpoints (blue) is more narrow, and the corridors among
+                                                                   endpoints are longer. The former makes detours in the white
+                                                                   space less useful, and the latter decreases the number of path
+                                                                   choices when agents are in the center of the map. Therefore,
+                                                                   it is important for the online guidance policy to lead agents
+                                                                   to choose an appropriate corridor and direction when enter-
+                                                                   ing the central area of the warehouse map to avoid conges-
+        (a) task           (b) on+PIBT          (c) off+PIBT       tion. Under the static task distribution, we can clearly see
+                                                                   the alternative preferred direction on warehouse map in the
+Figure 6: Online and offline guidance given task distribution      generated online guidance, but can hardly capture it in sor-
+on the empty map. Darker colors indicate more goals and            tation map. (See Figure 7). On the other hand, in both maps,
+higher wait costs.                                                 offline guidance graphs direct agents in one direction in the
+                                                                   central area and in another direction in the surrounding area.
+                                                                   Therefore, we can see why, under the static task distribution
+Online guidance can capture congestion locations. The              setting, online guidance leads to dramatic improvement on
+online guidance policies outperform the offline guidance           the warehouse map but not on the sortation map.
+graphs because they can get more real-time information
+from the downstream algorithms. For instance, the online                                5 Conclusion
+policy can capture different congestion locations and allevi-
+ate them.                                                          Lifelong MAPF is a challenging problem of immense prac-
+   Figures 6(b) and 6(c) show the online and offline wait          tical importance. Once we have a large number of agents, all
+costs given the task distribution shown in Figure 6(a) on the      practical approaches to the problem must overcome conges-
+empty map with the dynamic task distribution. The tasks are        tion problems. In this paper, we show how we can use dy-
+sampled from a 3-mode Gaussian distribution. We observe            namically generated guidance graphs that learn from traffic
+that the wait costs given by our guidance policy align with        patterns to generate guidance, alleviating traffic congestion
+the task distribution. Specifically, the areas with more tasks     and improving throughput. We show that our proposed on-
+are expected to be more congested. Therefore, our guidance         line guidance policy improve throughput in two state-of-the-
+policy generates higher wait costs to encourage the agents to      art LMAPF algorithms across 4 different maps. Our work
+move away from such areas, alleviating congestion. The wait        reveals several future directions. First, future works can ex-
+costs given by the offline guidance graph, however, have no        plore incorporating the guidance policy in other LMAPF
+correlation with the task distribution at all.                     algorithms such as RHCR (Li et al. 2021b) and Learn to
+                                                                   Follow (Skrynnik et al. 2024). Second, our work leverages
+                                                                   CMA-ES, requiring a large number of evaluations in the
+                                                                   LMAPF simulators to optimize the guidance policy. Fu-
+       1:5 1:4 1:3 1:2 1:1 2:1 3:1 4:1 5:1                         ture works can explore surrogate-assisted optimizers (Zhang
+                                                                   et al. 2022; Bhatt et al. 2022; Kent and Branke 2023) to im-
+                                                                   prove the sample efficiency of the optimization.
+
+                                                                                     Acknowledgments
+           (a) sortation-on          (b) warehouse-on              Hongzhi Zang performed her research during her visit to
+                                                                   Carnegie Mellon University. This work used Bridge-2 at
+                                                                   Pittsburgh Supercomputing Center (PSC) through allocation
+                                                                   CIS220115 from the Advanced Cyberinfrastructure Coordi-
+                                                                   nation Ecosystem: Services & Support (ACCESS) program,
+                                                                   which is supported by National Science Foundation grants
+           (c) sortation-off         (d) warehouse-off             #2138259, #2138286, #2138307, #2137603, and #2138296.
+
+Figure 7: Visualization of the ratio of left to right edge                                References
+weights in the guidance graph for sortation and warehouse          Bhatt, V.; Tjanaka, B.; Fontaine, M.; and Nikolaidis, S.
+maps, where “on” for on+PIBT and “off” for off+PIBT. Red           2022. Deep Surrogate Assisted Generation of Environments.
+cells indicate a higher ratio of left to right, while blue cells   In Proceedings of the Advances in Neural Information Pro-
+indicate a higher ratio of right to left.                          cessing Systems (NeurIPS), 37762–37777.
+                                                                   Brown, A. S. 2022.       How Amazon Robots Navigate
+The structure of the map affects the improvement ra-               Congestion. https://www.amazon.science/latest-news/how-
+tio of online guidance policy. Although the sortation and          amazon-robots-navigate-congestion. Accessed: 2023-05-
+warehouse maps look alike, they have different properties          09.
+Chen, Z.; Harabor, D.; Li, J.; and Stuckey, P. 2024. Traffic     Li, M.-F.; and Sun, M. 2023. The Study of Highway for
+Flow Optimisation for Lifelong Multi-Agent Path Finding.         Lifelong Multi-Agent Path Finding. ArXiv, 2304.04217.
+In Proceedings of the AAAI Conference on Artificial Intelli-     Liu, M.; Ma, H.; Li, J.; and Koenig, S. 2019. Task and Path
+gence (AAAI), 20674–20682.                                       Planning for Multi-Agent Pickup and Delivery. In Proceed-
+Cohen, L. 2020. Efficient Bounded-Suboptimal Multi-Agent         ings of the International Conference on Autonomous Agents
+Path Finding and Motion Planning via Improvements to Fo-         and Multi-Agent Systems (AAMAS), 1152–1160.
+cal Search. Ph.D. thesis, University of Southern California.     Ma, H.; Li, J.; Kumar, T. K. S.; and Koenig, S. 2017a. Life-
+Cohen, L.; Uras, T.; and Koenig, S. 2015. Feasibility Study:     long Multi-Agent Path Finding for Online Pickup and Deliv-
+Using Highways for Bounded-Suboptimal Multi-Agent Path           ery Tasks. In Proceedings of the International Conference
+Finding. In Proceedings of the International Symposium on        on Autonomous Agents and Multiagent Systems (AAMAS),
+Combinatorial Search (SoCS), 2–8.                                837–845.
+Cohen, L.; Uras, T.; Kumar, T. K. S.; Xu, H.; Ayanian,           Ma, H.; Yang, J.; Cohen, L.; Kumar, T. K. S.; and Koenig,
+N.; and Koenig, S. 2016. Improved Solvers for Bounded-           S. 2017b. Feasibility Study: Moving Non-Homogeneous
+Suboptimal Multi-Agent Path Finding. In Proceedings of           Teams in Congested Video Game Environments. In Pro-
+the International Joint Conference on Artificial Intelligence    ceedings of the AAAI Conference on Artificial Intelligence
+(IJCAI), 3067–3074.                                              and Interactive Digital Entertainment (AIIDE), 270–272.
+Damani, M.; Luo, Z.; Wenzel, E.; and Sartoretti, G. 2021.        Okumura, K. 2023. Improving LaCAM for Scalable Even-
+PRIMAL2 : Pathfinding Via Reinforcement and Imitation            tually Optimal Multi-Agent Pathfinding. In Proceedings of
+Multi-Agent Learning - Lifelong. IEEE Robotics and Au-           the Thirty-First International Joint Conference on Artificial
+tomation Letters, 6(2): 2666–2673.                               Intelligence (IJCAI).
+Han, S. D.; and Yu, J. 2022. Optimizing Space Utilization
+                                                                 Okumura, K.; Machida, M.; Défago, X.; and Tamura, Y.
+for More Effective Multi-Robot Path Planning. In Proceed-
+                                                                 2019. Priority Inheritance with Backtracking for Iterative
+ings of the International Conference on Robotics and Au-
+                                                                 Multi-agent Path Finding. In Proceedings of the Interna-
+tomation (ICRA), 10709–10715.
+                                                                 tional Joint Conference on Artificial Intelligence (IJCAI),
+Hansen, N. 2016. The CMA Evolution Strategy: A Tutorial.         535–542.
+ArXiv, abs/1604.00772.
+                                                                 Silver, D. 2005. Cooperative Pathfinding. In Proceedings of
+Jansen, M. R.; and Sturtevant, N. R. 2008. Direction Maps        the Artificial Intelligence and Interactive Digital Entertain-
+for Cooperative Pathfinding. In Proceedings of the AAAI          ment Conference (AIIDE), 117–122.
+Conference on Artificial Intelligence and Interactive Digital
+Entertainment (AIIDE), 185–190.                                  Skrynnik, A.; Andreychuk, A.; Nesterova, M.; Yakovlev, K.;
+                                                                 and Panov, A. 2024. Learn to Follow: Decentralized Life-
+Jiang, H.; Zhang, Y.; Veerapaneni, R.; and Li, J. 2024. Scal-
+                                                                 long Multi-Agent Pathfinding via Planning and Learning.
+ing Lifelong Multi-Agent Path Finding to More Realistic
+                                                                 In Proceedings of the AAAI Conference on Artificial Intel-
+Settings: Research Challenges and Opportunities. In Pro-
+                                                                 ligence (AAAI), 16, 17541–17549.
+ceedings of the International Symposium on Combinatorial
+Search (SoCS), 234–242.                                          Stern, R.; Sturtevant, N. R.; Felner, A.; Koenig, S.; Ma, H.;
+Kent, P.; and Branke, J. 2023. Bayesian Quality Diver-           Walker, T. T.; Li, J.; Atzmon, D.; Cohen, L.; Kumar, T. K. S.;
+sity Search with Interactive Illumination. In Proceedings        Barták, R.; and Boyarski, E. 2019. Multi-Agent Pathfind-
+of the Genetic and Evolutionary Computation Conference           ing: Definitions, Variants, and Benchmarks. In Proceedings
+(GECCO), 1019–1026.                                              of the International Symposium on Combinatorial Search
+                                                                 (SoCS), 151–159.
+Kou, N. M.; Peng, C.; Ma, H.; Kumar, T. K. S.; and Koenig,
+S. 2020. Idle Time Optimization for Target Assignment and        Tjanaka, B.; Fontaine, M. C.; Lee, D. H.; Zhang, Y.; Balam,
+Path Finding in Sortation Centers. In Proceedings of the         N. R.; Dennler, N.; Garlanka, S. S.; Klapsis, N. D.; and
+AAAI Conference on Artificial Intelligence (AAAI), 9925–         Nikolaidis, S. 2023. pyribs: A Bare-Bones Python Li-
+9932.                                                            brary for Quality Diversity Optimization. In Proceedings
+                                                                 of the Genetic and Evolutionary Computation Conference
+Li, J.; Chen, Z.; Harabor, D.; Stuckey, P. J.; and Koenig, S.
+                                                                 (GECCO), 220–229.
+2021a. Anytime Multi-Agent Path Finding via Large Neigh-
+borhood Search. In Proceedings of the International Joint        Wang, K. C.; and Botea, A. 2008. Fast and Memory-
+Conference on Artificial Intelligence (IJCAI), 4127–4135.        Efficient Multi-Agent Pathfinding.        In Proceedings of
+Li, J.; Sun, K.; Ma, H.; Felner, A.; Kumar, T. K. S.; and        the International Conference on Automated Planning and
+Koenig, S. 2020. Moving Agents in Formation in Congested         Scheduling (ICAPS), 380–387.
+Environments. In Proceedings of the International Joint          Yu, G.; and Wolf, M. 2023. Congestion prediction for
+Conference on Autonomous Agents and Multiagent Systems           large fleets of mobile robots. In Proceedings of the Inter-
+(AAMAS), 726–734.                                                national Conference on Robotics and Automation (ICRA),
+Li, J.; Tinka, A.; Kiesel, S.; Durham, J. W.; Kumar, T. K. S.;   7642–7649.
+and Koenig, S. 2021b. Lifelong Multi-Agent Path Finding in       Zhang, Y.; Fontaine, M. C.; Bhatt, V.; Nikolaidis, S.; and
+Large-Scale Warehouses. In Proceedings of the AAAI Con-          Li, J. 2023a. Arbitrarily Scalable Environment Gener-
+ference on Artificial Intelligence (AAAI), 11272–11281.          ators via Neural Cellular Automata. In Proceedings of
+the Advances in Neural Information Processing Systems
+(NeurIPS), 57212–57225.
+Zhang, Y.; Fontaine, M. C.; Bhatt, V.; Nikolaidis, S.; and
+Li, J. 2023b. Multi-Robot Coordination and Layout Design
+for Automated Warehousing. In Proceedings of the Inter-
+national Joint Conference on Artificial Intelligence (IJCAI),
+5503–5511.
+Zhang, Y.; Fontaine, M. C.; Hoover, A. K.; and Nikolaidis,
+S. 2022. Deep Surrogate Assisted MAP-Elites for Auto-
+mated Hearthstone Deckbuilding. In Proceedings of the Ge-
+netic and Evolutionary Computation Conference (GECCO),
+158–167.
+Zhang, Y.; Jiang, H.; Bhatt, V.; Nikolaidis, S.; and Li, J.
+2024. Guidance Graph Optimization for Lifelong Multi-
+Agent Path Finding. In Proceedings of the International
+Joint Conference on Artificial Intelligence (IJCAI), 311–
+320.
+  map-[dist type]      algorithm       Neval        b   Ne                       sortation   warehouse     empty    random
+    sortation-s         on+pibt       50,000      50      3        µ selection       ep           ep         ap        ap
+                        off+pibt      50,000      50      3             σ           1.0          1.0        0.5       0.5
+                       on+gpibt       10,000     100      2             K            1            1          3         3
+                     [p-on]+gpibt     10,000     100      2            Nd           200          200        200       200
+                       off+gpibt      10,000     100      2
+                                                                 Table 2: Dynamic task distribution hyper-parameters. ep
+    sortation-d         on+pibt       12,500      50      3      stands for endpoints. ap stands for any locations on the
+                        off+pibt      12,500      50      3      whole map. µ and σ denote the mean and standard deviation
+                       on+gpibt       50,000     100      5      of Gaussian distribution, K denotes the K-mode Gaussian,
+                     [p-on]+gpibt     50,000     100      5      and Nd denotes the task distribution change interval.
+                       off+gpibt      50,000     100      5
+   warehouse-s          on+pibt       25,000      50      3
+                        off+pibt      25,000      50      3      A.1    Hyper-parameters
+                       on+gpibt       20,000     100      2      CMA-ES. Table 1 shows the hyper-parameters in CMA-
+                     [p-on]+gpibt     20,000     100      2      ES. b stands for batch size, Ne stands for the number of
+                       off+gpibt      20,000     100      2      simulations used to evaluate one solution sampled from the
+                                                                 CMA-ES Gaussian distribution, and Neval stands for the to-
+   warehouse-d          on+pibt       25,000      50      3      tal number of evaluations during the optimization. We select
+                        off+pibt      25,000      50      3      various values of b to accommodate the number of param-
+                       on+gpibt       50,000     100      2      eters in the guidance policies for PIBT and GPIBT. Addi-
+                     [p-on]+gpibt     50,000     100      2      tionally, we choose different values of Ne to mitigate the
+                       off+gpibt      50,000     100      2      variance of the CMA-ES objective function in each evalu-
+      empty-s           on+pibt       25,000      50      3      ation. The rationale behind using different Neval values is
+                        off+pibt      25,000      50      3      that guidance policies in different settings have varying con-
+                       on+gpibt       10,000     100      2      vergence requirements in terms of the total number of evalu-
+                     [p-on]+gpibt     10,000     100      2      ations needed. While the hyper-parameters vary, we use the
+                       off+gpibt      10,000     100      2      same hyper-parameters for the settings that we make com-
+                                                                 parisons.
+      empty-d           on+pibt       25,000      50      3      Task setup. As mentioned in Section 4.1, we apply Gaus-
+                        off+pibt      25,000      50      3      sian and multi-mode Gaussian as the dynamic task distribu-
+                       on+gpibt       10,000     100      2      tions on different maps. Table 2 shows the detailed hyper-
+                     [p-on]+gpibt     10,000     100      2      parameters. To sample the tasks, we regard the map as a
+                       off+gpibt      10,000     100      2      2D space. The Gaussian center is selected from a subset of
+     random-s           on+pibt       50,000      50      3      all locations on the map, as indicated in the table. After Nd
+                        off+pibt      50,000      50      3      timesteps, the Gaussian centers are randomly sampled again,
+                                                                 and agents’ new tasks are sampled from the updated (multi-
+                       on+gpibt       50,000     100      5
+                                                                 mode) Gaussian distribution.
+                     [p-on]+gpibt     50,000     100      5
+                       off+gpibt      50,000     100      5      A.2    On+PIBT Guidance Policy
+     random-d           on+pibt       50,000      50      3      The guidance policy for on+PIBT is a 3-layer Convolutional
+                        off+pibt      50,000      50      3      Neural Network (CNN). The kernel sizes on each layer are 3,
+                       on+gpibt       20,000     100      5      1, and 1, respectively. We choose ReLU and BatchNorm2d
+                     [p-on]+gpibt     20,000     100      5      to serve as the non-linearity layers. The observation of the
+                       off+gpibt      20,000     100      5      guidance policy includes past traffic and current tasks. Con-
+                                                                 cretely, the past traffic is the edge usage of all edges in Eg
+Table 1: CMA-ES hyperparameters. [dist type] is an abbre-        in previous m steps. It is encoded in shape (5, h, w), where
+viation for distribution type, where “d” stands for dynamic      5 denotes the outgoing edges in 5 directions (right, up, left,
+and “s” stands for static.                                       down, self) of each vertex, and (h, w) denotes the height and
+                                                                 width of the map. The current tasks encode the current goal
+                                                                 locations for all agents with the shape of (h, w). For loca-
+                                                                 tion (x, y), the value is the number of goals on (x, y). Each
+                                                                 channel of the observation is normalized in (0, 1) to stabi-
+         A    Detailed Experiments Setups                        lize the model output. The output of the guidance policy is
+                                                                 the guidance graph edge weights of shape (5, h, w). The to-
+                                                                 tal number of parameters is 3,119.
+In this section, we present the detailed setups of the experi-      We use a small CNN with small kernel sizes, not only
+ments presented in Section 4.                                    because the model’s observation is a 3D tensor, but also to
+ensure the number of parameters is not too large so that it is     Algorithm 1: Search for guide paths by using guidance pol-
+easier for CMA-ES to optimize.                                     icy
+                                                                    1: Input start location s; goal location goal; online policy
+A.3    On+GPIBT Guidance Policy
+                                                                         πθ ; current all agents guide-path edge usage Ue
+Guidance policy implementation. As mentioned in Sec-                2: Notation OPEN, open list in A* search, which is a pri-
+tion 3, we call the model to update the guidance graph before          ority heap; CLOSE, the closed list in the search, ensures
+an agent plans its guide path. In implementation, we actually          that no node is expanded more than once; h(x), any ad-
+use a lazy mechanism. We calculate the edge weights in the             missible heuristic function for location x.
+guidance graph only for those edges that connect to the ex-         3: root ← search-node(loc=s, g=0, h=h(s), parent=none)
+panded neighbors of the current locations during the search         4: OPEN ← {root}; CLOSE ← {} // initialize open list
+for the shortest guide paths on the graph. This lazy mecha-         5: while OPEN ̸= ϕ do
+nism avoids computing unnecessary edge weights, thereby             6:    curr ← OPEN.pop()
+reducing the overhead of calling the guidance policy dur-           7:    CLOSE.push(curr)
+ing agents’ guide path generation. Algorithm 1 shows the            8:    if curr.loc= goal then
+pseudo-code of the search process for the guide path of each        9:       break
+agent. Overall, it is an A* search. We employ h(x) ≡ 1 as          10:    end if
+the admissible heuristic function, given that all edge weights     11:    obs ← Windowed-Obs(curr.loc, win size, Ue )
+in the guidance graph are at least 1. Line 3 and Line 4 initial-   12:    cost ← πθ (obs) + 1. // cost ∈ R4
+ize the OPEN list with the start location s and the CLOSE          13:    for nid, n in enumerate(curr.loc.neighbors) do
+list with an empty list. Line 5 to Line 26 is the main while       14:       costn = cost[nid]
+loop of the A* search. Line 6 pops the node with least f val-      15:       next ← search-node(loc=n, g=curr.g+costn , h =
+ues (the sum of g and h). Line 7 then push the popped node                   h(n), parent=curr)
+into the close list. These are the preparation steps before ex-    16:       if n is not equal to the location of any nodes in
+panding the curr node. Line 8 checks whether the expanded                    OPEN then
+node is the goal location. We then compute the model obser-        17:          OPEN.push(next)
+vation (Line 11) and use the guidance policy to compute the        18:       else
+edge weights on the guidance graph (Line 12). We explain           19:          // ∃existing ∈ OPEN s.t. existing.loc=next
+the windowed observation in the next subsection. Using the         20:          if next.g < existing.g then
+weights, we continue to expand the current node. Line 13 to        21:             assert existing ∈
+                                                                                                   / CLOSE
+Line 25 is the for loop for the expanding process, the same        22:             OPEN.update(existing, next) // use “next” to
+as the typical A* search.                                                          replace the “existing” node in the open list.
+Guidance policy model parameters. We use swin to denote            23:          end if
+the window size of the observation. The observation of the         24:       end if
+guidance policy is the windowed guide-paths edge usage,            25:    end for
+encoded in the shape of (4, swin , swin ). The window center       26: end while
+is located at the current expanding node. 4 channels stand
+for right, up, left, and down guide-paths edge usage of other
+agents. We choose swin =5. The output of the model is the          Nectar Cloud instance with a 32-core AMD EPYC-Rome
+weights of the guidance graph on 4 outgoing edges of the           Processor and 64GB RAM, and (4) a high-performing clus-
+current expanding node.                                            ter with numerous 64-core AMD EPYC 7742 CPUs, each
+   We use a simple quadratic function as guidance policy.          with 256GB of RAM. The CPU runtime is measured on the
+Every term in the windowed guide-path edge usage is as-            machine (1).
+sociated with an optimizable linear variable. We further in-
+clude quadratic variables on contra-flow of the windowed           A.5     Relevant Software Library
+guide-path edge usage. That is, for each pair of adjacent ver-
+tex u and v included in the guide-path edge usage, we con-         We follow the previous work (Zhang et al. 2024) and imple-
+sider the product term of guide-path edge usage on (u, v)          ment CMA-ES using Pyribs (Tjanaka et al. 2023). We use
+and (v, u). Such a design is inspired by (Chen et al. 2024),       the open-source Guided-PIBT implementation of Chen et al.
+and it ensures that the handcrafted function in hm+GPIBT           (2024), and PIBT implementation of Jiang et al. (2024).
+can be represented by our network architecture. The total
+number of parameters for on+GPIBT online guidance pol-                     B    Additional Experimental Results
+icy model is 560.                                                  In this section, we show the following additional experiment
+                                                                   results: (1) runtime of different algorithms, (2) ablation re-
+A.4    Compute Resource                                            sults on the guidance update interval m, and (3) visualization
+We run our experiments on 4 machines: (1) a local machine          for deadlock mitigation.
+with a 64-core AMD Ryzen Threadripper 3990X CPU, 192
+GB of RAM, and an Nvidia RTX 3090Ti GPU, (2) a local               B.1     Runtime
+machine with a 64-core AMD Threadripper 7980X CPU,                 Table 3 shows numerical results for runtime mentioned in
+128 GB of RAM, and an Nvidia RTX 1080Ti GPU, (3) a                 Section 4.2. The runtime of on+PIBT is 2-3 times slower
+             map-type       on+PIBT            off+PIBT        on+GPIBT              [p-on]+GPIBT       off+GPIBT            hm+GPIBT
+       sortation-s      27.912±5.504   11.284±0.299       16.752±0.214                 5.735±0.698     2.943±0.078         3.326±0.131
+       sortation-d      24.954±4.687    8.016±0.765        9.504±0.578                 5.117±0.834     2.176±0.075         2.605±0.104
+      warehouse-s       15.515±2.682    5.883±0.306        7.902±0.265                 3.826±0.692     1.440±0.029         1.475±0.036
+      warehouse-d       14.061±2.238    4.395±0.217        4.074±0.269                 3.618±0.715     1.203±0.047        1.292±0.0483
+          empty-s       11.416±1.685    6.405±0.196       10.322±0.317                 3.665±0.603     1.787±0.066         2.026±0.092
+          empty-d        9.944±1.408    4.439±0.306        8.482±0.548                 3.149±0.636     1.200±0.056         1.267±0.051
+        random-s         8.524±1.182    4.804±0.332        5.912±1.132                 3.173±0.696     1.279±0.063         1.348±0.089
+        random-d         7.706±0.965    3.638±0.442        3.530±0.323                 2.857±0.657     0.951±0.046         0.953±0.045
+
+Table 3: CPU runtime (in seconds) table for all algorithms for 1,000 timesteps. Type s and d stand for static and dynamic task
+distribution. The numbers of agents are 800, 600, 400, and 400 for the sortation, warehouse, empty and random map.
+
+
+than off+PIBT due to the need to recompute the heuris-                           9      warehouse-s            6.0      warehouse-d
+tics. For GPIBT-based methods, the runtime of off+GPIBT
+                                                                                                               5.5
+
+                                                                    throughput                                                               runtime(s)
+and hm+GPIBT is similar, as they require minimal effort                          8                                                          20
+to compute the edge weights of the guidance graph when                                                      20 5.0
+planning the guide paths. [p-on]+GPIBT does not com-                             7                             4.5
+pute edge weights during the guide-path search, but it does                                                 10                              10
+                                                                                 6                             4.0
+compute observations when updating the guidance graph.                               20 50 100        200            20 50 100        200
+on+GPIBT is up to 7 times slower than hm+GPIBT and                                          m                               m
+off+GPIBT because it updates the guidance graph every
+time an agent replans its guide path. on+GPIBT is also              Figure 8: The relationships between throughput and m, and
+slower than [p-on]+GPIBT because, in [p-on]+GPIBT, all              the total runtime for 1000 timesteps and m, are shown for
+agents share the same guidance graph, which ignores the             600 agents. “s” and “d” indicate static and dynamic task
+guide-path edge usage, whereas on+GPIBT does not. As                distribution, respectively. Blue points represent throughput,
+a result, on+GPIBT updates the guidance graph more fre-             while pink points represent runtime. Gray bars indicate the
+quently, and thus more time-consuming. While on+PIBT                95% confidence interval, although some of them are too
+and on+GPIBT incur higher runtimes, they achieve higher             small to be visible.
+throughput.
+   Table 4 presents numerical results for the run-
+time of LNS-related algorithms mentioned in Sec-
+tion 4.2. on+GPIBT+LNS(eval) shares similar runtime with
+on+GPIBT+LNS.
+
+      algo                 on            off              hm
+   static        42.145±0.562   7.828±0.194     8.383±0.111
+  dynamic        38.553±1.528   6.680±0.364     8.961±0.321
+
+Table 4: CPU runtime (in seconds) of LNS-based algorithms
+with 600 agents for 1000 steps. Static and dynamic indi-
+cate the task distribution. “on”, “off”, and “hm” stand for         Figure 9: Finished tasks at each step on the random map with
+on+GPIBT+LNS, off+GPIBT+LNS, and hm+GPIBT+LNS,                      PIBT(vanilla). The lighter lines represent raw data, while the
+respectively.                                                       darker lines are smoothed by averaging over 5 timesteps.
+
+
+B.2     Ablation on Guidance Update Interval
+                                                                    the warehouse map with static and dynamic task distribu-
+Section 3.1 mentioned the guidance update interval m for
+                                                                    tion. We set CMA-ES hyper-parameters Neval = 25, 000,
+PIBT. The selection of m is a trade-off between the adapt-
+                                                                    b = 50, and Ne = 3.
+ability of the guidance policy to varying traffic patterns and
+the computational overhead. Updating the guidance graph             Results. Figure 8 shows the ablation results. We observe that
+more frequently could lead to better throughput at the ex-          the smaller the m, the higher the throughput and the longer
+pense of more computational overhead.                               the runtime. Given the trade-off of runtime and throughput
+Experiments setup. In this section, we compare the perfor-          with the choice of m, it depends on the exact planning time
+mance of m ∈ {10, 20, 50, 100, 200}. We optimize all guid-          limit of the downstream application scenario of our algo-
+ance policies with CMA-ES with 600 agents. We focus on              rithm to determine the exact value of m.
+B.3   Deadlocks Mitigation
+Figure 9 shows the number of reached goals at each
+timestep on the random map with 400 agents, comparing
+off+PIBT(vanilla) and on+PIBT(vanilla). The number of
+completed tasks drops to 0 for off+PIBT(vanilla), indicating
+that agents encounter deadlocks. In contrast, with a guid-
+ance policy, on+PIBT(vanilla) enables the agents to escape
+from deadlocks and maintain a consistent flow of completed
+tasks.
+
