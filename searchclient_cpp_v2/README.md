@@ -49,6 +49,14 @@ invariants, planner internals, joint-action accounting).
 - **Transactional commits.** Every layer snapshots `(state_,
   plan_.size())` and rolls both back atomically on failure — no
   partial joint actions ever leak into the final plan.
+- **Post-processing plan compaction.** A safety-net pass merges the
+  serially-emitted single-agent steps into real joint actions so
+  independent agents move in parallel in the GUI. Runs both a greedy
+  and a sliding-window scheduler, verifies the replay against the
+  original final state, and keeps the shorter. Same solve count,
+  ~5 % fewer joint actions on average (up to 65 % on independent-agent
+  levels like Agentix and TourDeDTU); falls back to the original plan
+  on any failure.
 - **Zero-dependency unit tests** (`v2_tests`), identical in Debug and
   Release.
 
@@ -109,6 +117,7 @@ searchclient_cpp_v2/
 │   ├── topology.hpp         # walls-only / box-aware BFS, components
 │   ├── single_box.hpp       # SingleBoxAStar
 │   ├── pibt.hpp             # PIBT joint planner
+│   ├── compact.hpp          # post-processing plan compaction
 │   └── solver.hpp           # Solver orchestrator
 ├── src/
 │   ├── core.cpp             # 29-entry action table + State methods
@@ -116,6 +125,7 @@ searchclient_cpp_v2/
 │   ├── topology.cpp
 │   ├── single_box.cpp
 │   ├── pibt.cpp
+│   ├── compact.cpp          # greedy + sliding-window plan compaction
 │   ├── solver.cpp           # pipeline, delivery, relocation, final phase
 │   └── main.cpp             # server protocol I/O
 └── tests/
@@ -194,6 +204,8 @@ level log files.
                 │  for variant in variants:                      │
                 │      state_ = initial_state_; plan_.clear()    │
                 │      if solve_once(variant): return plan_      │
+                │                                                │
+                │  plan_ = compact_plan(plan_, initial_state_)   │
                 └────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -225,12 +237,16 @@ level log files.
 | Per-task delivery | Single-box A\* | scatter → corridor-evac → defer → relocation |
 | Blocker relocation | Single-box A\* (recursive) | Larger parking-cell pool, allow-on-goal pass |
 | Final agent phase | PIBT | Cooperative A\* → serial BFS |
+| Post-processing | Plan compaction (greedy + sliding window) | Original plan if either verification fails |
 
 Joint-action plans are built incrementally by `Solver::append_joint`.
 Single-agent layers wrap their step in a joint action with `NoOp` for
 all other agents; PIBT and cooperative A\* emit real multi-agent joint
-actions. The `server_len` column in benchmark CSVs is exactly the
-final `plan_.size()`. See `ARCHITECTURE.md` §4 for the per-layer
+actions. Before returning, `compact_plan` re-packs the per-agent
+sub-sequences into the shortest equivalent joint-action plan it can
+find, so independent agents move in parallel in the GUI. The
+`server_len` column in benchmark CSVs is the **post-compaction**
+`plan_.size()`. See `ARCHITECTURE.md` §4 and §5.7 for the per-layer
 breakdown.
 
 ---
@@ -252,6 +268,7 @@ breakdown.
 | └ + corridor evac + final-goal evac (r15)   |    28 / 47 |        44 / 69  |   72 / 116  |
 | └ + cooperative A\* CAG planner (r17)       |    28 / 47 |        45 / 69  |   73 / 116  |
 | └ + DP-optimal task assignment (r19)        |    28 / 47 |        45 / 69  |   73 / 116  |
+| └ + post-processing plan compaction (r20)   |    28 / 47 |        45 / 69  |   73 / 116  |
 
 - Per-level CSVs and Markdown tables: `benchmarks/results/v2-bench-*.csv`.
 - Per-level logs: `benchmarks/results/v2-bench-*-logs/`.
@@ -315,6 +332,13 @@ Current coverage:
 - `solver_trivial` — an agent walks to its numeric goal.
 - `solver_box` — an agent pushes one box to one letter-goal.
 - `pibt_swap` — two agents must swap positions; PIBT resolves it.
+- `compact_preserves_final_state_box_level` — compaction of a real
+  box-delivery plan yields the same final state.
+- `compact_shrinks_independent_agents` — two agents whose sub-plans
+  don't conflict get re-packed into one joint action per step.
+- `compact_rejects_same_box_joint` — two agents that would touch the
+  same physical box in one step are never merged into one joint
+  action.
 
 `v2_tests` is intentionally tiny — a 30-line `CHECK(...)` macro that
 exits 1 on failure, zero external dependencies, identical behaviour in

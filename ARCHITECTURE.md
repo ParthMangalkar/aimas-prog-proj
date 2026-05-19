@@ -69,6 +69,7 @@ searchclient_cpp_v2/
 │   ├── topology.hpp          # walls-only / box-aware BFS, components
 │   ├── single_box.hpp        # SingleBoxAStar: A* on (agent_pos, box_pos)
 │   ├── pibt.hpp              # PIBT joint planner for final phase
+│   ├── compact.hpp           # post-processing plan compaction
 │   └── solver.hpp            # Solver: orchestrates the whole pipeline
 ├── src/
 │   ├── core.cpp              # 29-entry action table + State methods
@@ -76,12 +77,14 @@ searchclient_cpp_v2/
 │   ├── topology.cpp          # cached BFS distances, connected components
 │   ├── single_box.cpp        # A* over (agent, box) pairs
 │   ├── pibt.cpp              # PIBT joint coordinator
+│   ├── compact.cpp           # greedy + sliding-window plan compaction
 │   ├── solver.cpp            # 1 896 LOC — task variants, delivery,
 │   │                         #   relocation, evacuation, final phase
 │   └── main.cpp              # server protocol I/O
 └── tests/
     └── test_main.cpp         # action_table, parse, applicable+conflict,
-                              # solver_trivial, solver_box, pibt_swap
+                              # solver_trivial, solver_box, pibt_swap,
+                              # compact_*
 ```
 
 | Module | LOC | Depends on |
@@ -91,9 +94,10 @@ searchclient_cpp_v2/
 | `topology` | 256 | `core` |
 | `single_box` | 308 | `core`, `topology` |
 | `pibt` | 347 | `core`, `topology` |
+| `compact` | 210 | `core` |
 | `solver` | 2 044 | all of the above |
 | `main` | 60 | `core`, `parser`, `solver` |
-| `tests` | 196 | all |
+| `tests` | 280 | all |
 
 Dependency graph is strictly acyclic; lower-level modules never reference
 the orchestrator.
@@ -181,7 +185,10 @@ Different layers emit very different "shapes" of joint action:
 
 `main.cpp` emits each row to stdout and reads the server's per-row ack
 once. The server's count (= `plan_.size()` when solved) is what gets
-recorded in the benchmark CSVs as `server_len`.
+recorded in the benchmark CSVs as `server_len`. **Note**: before
+`solve()` returns, `compact_plan` (§5.7) re-packs the plan, so
+`server_len` is the *post-compaction* length, not the length each
+layer accumulated during search.
 
 **Practical consequence**: a level solved entirely via PIBT will have a
 plan dozens of times shorter than the same level solved serially. There
@@ -321,6 +328,52 @@ sitting on another agent's final goal cell or path, and
 `clear_paths_to_agent_goals` relocates boxes that would prevent serial
 BFS from completing.
 
+### 5.7 Post-processing plan compaction (`compact.{hpp,cpp}`)
+
+The serial delivery layers (single-box A\*, scatter, relocation,
+corridor evacuation, serial CAG) all emit one joint action per
+mover step, with every other agent forced to `NoOp`. That's correct
+but visually serial — in the GUI only one agent moves at a time even
+though many of those steps were independent. `Solver::solve` therefore
+ends with one final pass:
+
+```cpp
+plan_ = compact_plan(plan_, initial_state_);
+```
+
+`compact_plan` runs **two** schedulers and keeps the shorter result:
+
+1. **Greedy.** Extract each agent's non-`NoOp` sub-sequence (its
+   private action queue). At each compacted step, walk agents in
+   index order and tentatively pop one action from each queue whose
+   head is applicable on the running state and doesn't conflict with
+   already-chosen actions. Commit the joint action and advance. Bails
+   if no agent can move (deadlock from a too-aggressive lex-order
+   choice).
+2. **Sliding window.** Walk the *original* plan in temporal order and
+   accumulate consecutive non-conflicting single-agent steps into one
+   joint action; commit on the first conflict, then continue. Strictly
+   preserves the original per-agent ordering, so it never deadlocks
+   but only saves at agent-transition boundaries.
+
+Both schedulers go through `can_merge(state, joint, agent, action)`,
+which checks:
+
+- the candidate action is applicable on `state`;
+- adding it doesn't create a duplicate `box_from` with any agent
+  already in the in-flight joint (guard against a latent
+  `core::conflicting()` blind spot — see §6);
+- `State::conflicting(joint)` still passes on the augmented joint.
+
+After building, both candidates are **replayed** from `initial_state_`
+through `State::apply_joint`; if the resulting state doesn't
+`StateEq`-match the reference, that candidate is discarded and the
+*original* plan is returned. Real-world impact across the 73 solved
+levels: 71/73 plans shrink, 5 % fewer joint actions on average, up to
+65 % on independent-agent levels (Agentix, TourDeDTU). Solve count is
+unchanged by construction — compaction is a safe rewrite of an
+already-valid plan, never a search step.
+
 ---
 
 ## 6. Transactional invariants
@@ -384,6 +437,7 @@ GoogleTest, no Catch2) so they run identically in Debug and Release.
 | **PIBT** | Okumura et al. (2019) "Priority Inheritance with Backtracking for Iterative Multi-agent Path Finding" |
 | **Cooperative A\*** | Silver (2005) "Cooperative Pathfinding" (with the standard reverse-edge swap check) |
 | **DP-optimal letter matching** | Bitmask DP over assignment; folklore |
+| **Plan compaction (compact.cpp)** | Custom; conceptual sibling of post-hoc MAPF plan smoothing |
 | References in `research_papers/` | A\*+ (`AStar_Plus/`), LMAPF (`LMAPF/`) |
 
 ---
