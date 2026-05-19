@@ -1,0 +1,2 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,reach_cell_failed,,,,,,,25.728452,0,benchmarks/results/phaseE-datz-order-fallback-logs/complevels_DatzCrazy.lvl__-prioritized.log

@@ -1,0 +1,2 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels_2026/MAPFlame.lvl,-prioritized,True,False,False,solved,111,111,,,,,4.260173,0,benchmarks/results/medium-only-probe-logs/complevels_2026_MAPFlame.lvl__-prioritized.log

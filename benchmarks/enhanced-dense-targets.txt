@@ -1,0 +1,9 @@
+# Dense target failures called out in ENHANCEMENT_PLAN.md.
+complevels/AMC.lvl
+complevels/Medibots.lvl
+complevels/PokeNOM.lvl
+complevels_2026/BoxBender.lvl
+complevels_2026/brAIn.lvl
+complevels_2026/CudBSlvd.lvl
+complevels_2026/MASaos.lvl
+complevels_2026/WardRush.lvl

@@ -1,0 +1,5 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels_2026/BStar.lvl,-prioritized,False,False,False,reach_cell_failed,,,164999,2180131,2345130,24.879,25.774483,0,benchmarks/results/assignment-variant-probe-logs/complevels_2026_BStar.lvl__-prioritized.log
+complevels_2026/BigForty.lvl,-prioritized,False,False,False,deliver_box_failed,,,4999,106409,111408,12.202,13.588704,0,benchmarks/results/assignment-variant-probe-logs/complevels_2026_BigForty.lvl__-prioritized.log
+complevels_2026/Nej.lvl,-prioritized,False,False,False,deliver_box_failed,,,5999,350822,356821,9.932,11.337924,0,benchmarks/results/assignment-variant-probe-logs/complevels_2026_Nej.lvl__-prioritized.log
+complevels_2026/Planarchy.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,13.590697,0,benchmarks/results/assignment-variant-probe-logs/complevels_2026_Planarchy.lvl__-prioritized.log

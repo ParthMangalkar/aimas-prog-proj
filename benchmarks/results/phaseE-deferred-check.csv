@@ -1,0 +1,4 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/MArtians.lvl,-prioritized,True,False,False,solved,1613,1613,,,,,45.235662,0,benchmarks/results/phaseE-deferred-check-logs/complevels_MArtians.lvl__-prioritized.log
+levels/MAthomasAppartment.lvl,-prioritized,True,False,False,solved,208,208,,,,,13.935687,0,benchmarks/results/phaseE-deferred-check-logs/levels_MAthomasAppartment.lvl__-prioritized.log
+levels/MAthomasAppartment_redbluecyan.lvl,-prioritized,True,False,False,solved,208,208,,,,,11.651390,0,benchmarks/results/phaseE-deferred-check-logs/levels_MAthomasAppartment_redbluecyan.lvl__-prioritized.log

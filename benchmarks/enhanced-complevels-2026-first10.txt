@@ -1,0 +1,11 @@
+# First 10 complevels_2026 levels in benchmark sort order.
+complevels_2026/Agentix.lvl
+complevels_2026/AIegean.lvl
+complevels_2026/AlBarah.lvl
+complevels_2026/AlphaMAS.lvl
+complevels_2026/amogus.lvl
+complevels_2026/Apdo.lvl
+complevels_2026/AssertFun.lvl
+complevels_2026/BigForty.lvl
+complevels_2026/BoxBender.lvl
+complevels_2026/brAIn.lvl

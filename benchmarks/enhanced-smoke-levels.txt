@@ -1,0 +1,11 @@
+# Fast smoke set for the standalone enhanced solver.
+complevels/AIMAS7.lvl
+complevels/Ccropper.lvl
+complevels/DASH.lvl
+complevels/GHandDirt.lvl
+complevels/MAchoupo2.lvl
+complevels/warehouse.lvl
+complevels_2026/Agentix.lvl
+complevels_2026/AssertFun.lvl
+complevels_2026/CBSquad.lvl
+complevels_2026/BoxBender.lvl

@@ -1,0 +1,4 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/BigSplit.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,5.545538,0,benchmarks/results/phaseCBS-raisedcap60-logs/complevels_BigSplit.lvl__-prioritized.log
+complevels/MArtians.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,5.204687,0,benchmarks/results/phaseCBS-raisedcap60-logs/complevels_MArtians.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,False,False,deliver_box_failed,,,13999,117653,131652,14.612,15.069411,0,benchmarks/results/phaseCBS-raisedcap60-logs/complevels_ZOOM.lvl__-prioritized.log

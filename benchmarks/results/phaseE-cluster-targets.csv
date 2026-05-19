@@ -1,0 +1,5 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,reach_cell_failed,,,,,,,15.421719,0,benchmarks/results/phaseE-cluster-targets-logs/complevels_DatzCrazy.lvl__-prioritized.log
+complevels/TBSTANS1.lvl,-prioritized,False,True,False,timeout,,,,,,,120.070370,0,benchmarks/results/phaseE-cluster-targets-logs/complevels_TBSTANS1.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,True,False,timeout,,,,,,,120.089309,0,benchmarks/results/phaseE-cluster-targets-logs/complevels_ZOOM.lvl__-prioritized.log
+complevels/pacMAn.lvl,-prioritized,False,True,False,timeout,,,,,,,120.081976,0,benchmarks/results/phaseE-cluster-targets-logs/complevels_pacMAn.lvl__-prioritized.log

@@ -1,0 +1,2 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+mavis-only-tmp/MAvis.lvl,,False,False,False,unable_to_solve,,,,,,,0.132600,0,benchmarks/results/v2-mavis-trace-logs/mavis-only-tmp_MAvis.lvl__default.log

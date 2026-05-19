@@ -1,0 +1,2 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/ZOOM.lvl,-prioritized,False,True,False,timeout,,,,,,,240.077364,0,benchmarks/results/zoom-local-h120-logs/complevels_ZOOM.lvl__-prioritized.log

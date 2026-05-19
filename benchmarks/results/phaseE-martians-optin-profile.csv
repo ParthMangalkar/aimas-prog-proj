@@ -1,0 +1,2 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/MArtians.lvl,-prioritized,True,False,False,solved,1613,1613,,,,,21.622361,0,benchmarks/results/phaseE-martians-optin-profile-logs/complevels_MArtians.lvl__-prioritized.log

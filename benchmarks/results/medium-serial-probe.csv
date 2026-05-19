@@ -1,0 +1,6 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels_2026/BStar.lvl,-prioritized,False,False,False,reach_cell_failed,,,157999,2066729,2224728,25.033,25.741072,0,benchmarks/results/medium-serial-probe-logs/complevels_2026_BStar.lvl__-prioritized.log
+complevels_2026/BigForty.lvl,-prioritized,False,False,False,deliver_box_failed,,,4999,106409,111408,12.45,13.783511,0,benchmarks/results/medium-serial-probe-logs/complevels_2026_BigForty.lvl__-prioritized.log
+complevels_2026/MAPFlame.lvl,-prioritized,True,False,False,solved,111,111,,,,,4.340079,0,benchmarks/results/medium-serial-probe-logs/complevels_2026_MAPFlame.lvl__-prioritized.log
+complevels_2026/Nej.lvl,-prioritized,False,False,False,deliver_box_failed,,,5999,350822,356821,11.213,11.811309,0,benchmarks/results/medium-serial-probe-logs/complevels_2026_Nej.lvl__-prioritized.log
+complevels_2026/Planarchy.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,13.813611,0,benchmarks/results/medium-serial-probe-logs/complevels_2026_Planarchy.lvl__-prioritized.log

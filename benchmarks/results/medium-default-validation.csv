@@ -1,0 +1,6 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels_2026/AIegean.lvl,-prioritized,True,False,False,solved,40,40,,,,,0.413948,0,benchmarks/results/medium-default-validation-logs/complevels_2026_AIegean.lvl__-prioritized.log
+complevels_2026/Agentix.lvl,-prioritized,True,False,False,solved,14,14,,,,,0.085368,0,benchmarks/results/medium-default-validation-logs/complevels_2026_Agentix.lvl__-prioritized.log
+complevels_2026/CBSquad.lvl,-prioritized,True,False,False,solved,198,198,,,,,10.429294,0,benchmarks/results/medium-default-validation-logs/complevels_2026_CBSquad.lvl__-prioritized.log
+complevels_2026/MAPFlame.lvl,-prioritized,True,False,False,solved,111,111,,,,,3.436016,0,benchmarks/results/medium-default-validation-logs/complevels_2026_MAPFlame.lvl__-prioritized.log
+complevels_2026/donut.lvl,-prioritized,True,False,False,solved,29,29,,,,,0.254319,0,benchmarks/results/medium-default-validation-logs/complevels_2026_donut.lvl__-prioritized.log

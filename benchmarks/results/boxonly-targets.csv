@@ -1,0 +1,5 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,11.451785,0,benchmarks/results/boxonly-targets-logs/complevels_DatzCrazy.lvl__-prioritized.log
+complevels/TBSTANS1.lvl,-prioritized,False,False,False,deliver_box_failed,,,8999,308909,317908,34.949,35.123899,0,benchmarks/results/boxonly-targets-logs/complevels_TBSTANS1.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,False,False,deliver_box_failed,,,14999,118505,133504,14.221,14.709847,0,benchmarks/results/boxonly-targets-logs/complevels_ZOOM.lvl__-prioritized.log
+complevels/pacMAn.lvl,-prioritized,False,False,False,deliver_box_failed,,,6999,82421,89420,14.096,15.189496,0,benchmarks/results/boxonly-targets-logs/complevels_pacMAn.lvl__-prioritized.log

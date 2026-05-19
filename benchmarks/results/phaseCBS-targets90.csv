@@ -1,0 +1,8 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/BigSplit.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,15.417258,0,benchmarks/results/phaseCBS-targets90-logs/complevels_BigSplit.lvl__-prioritized.log
+complevels/ClosedAI.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,15.100102,0,benchmarks/results/phaseCBS-targets90-logs/complevels_ClosedAI.lvl__-prioritized.log
+complevels/GroupEZ.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,83.160716,0,benchmarks/results/phaseCBS-targets90-logs/complevels_GroupEZ.lvl__-prioritized.log
+complevels/ISO.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,15.203455,0,benchmarks/results/phaseCBS-targets90-logs/complevels_ISO.lvl__-prioritized.log
+complevels/MArtians.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,15.086926,0,benchmarks/results/phaseCBS-targets90-logs/complevels_MArtians.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,False,False,deliver_box_failed,,,13999,117653,131652,14.506,14.971062,0,benchmarks/results/phaseCBS-targets90-logs/complevels_ZOOM.lvl__-prioritized.log
+complevels/pacMAn.lvl,-prioritized,False,False,False,deliver_box_failed,,,6999,82421,89420,14.482,15.423029,0,benchmarks/results/phaseCBS-targets90-logs/complevels_pacMAn.lvl__-prioritized.log

@@ -1,0 +1,5 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/DatzCrazy.lvl,-prioritized,False,False,False,deliver_box_failed,,,,,,,84.545859,0,benchmarks/results/localjoint-targets-logs/complevels_DatzCrazy.lvl__-prioritized.log
+complevels/TBSTANS1.lvl,-prioritized,False,True,False,timeout,,,,,,,180.083436,0,benchmarks/results/localjoint-targets-logs/complevels_TBSTANS1.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,True,False,timeout,,,,,,,180.088054,0,benchmarks/results/localjoint-targets-logs/complevels_ZOOM.lvl__-prioritized.log
+complevels/pacMAn.lvl,-prioritized,False,True,False,timeout,,,,,,,180.072571,0,benchmarks/results/localjoint-targets-logs/complevels_pacMAn.lvl__-prioritized.log

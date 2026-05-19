@@ -1,0 +1,6 @@
+level,algorithm,solved,timeout,over_cap,category,server_len,client_len,expanded,frontier,generated,search_seconds,wall_seconds,exit_code,log
+complevels/BigSplit.lvl,-prioritized,False,True,False,timeout,,,,,,,90.132177,0,benchmarks/results/phaseG-windowed-targets90-logs/complevels_BigSplit.lvl__-prioritized.log
+complevels/Lily.lvl,-prioritized,False,True,False,timeout,,,,,,,90.088923,0,benchmarks/results/phaseG-windowed-targets90-logs/complevels_Lily.lvl__-prioritized.log
+complevels/MArtians.lvl,-prioritized,False,True,False,timeout,,,,,,,90.080710,0,benchmarks/results/phaseG-windowed-targets90-logs/complevels_MArtians.lvl__-prioritized.log
+complevels/Minchia.lvl,-prioritized,False,True,False,timeout,,,,,,,90.092947,0,benchmarks/results/phaseG-windowed-targets90-logs/complevels_Minchia.lvl__-prioritized.log
+complevels/ZOOM.lvl,-prioritized,False,False,False,deliver_box_failed,,,14999,118505,133504,15.37,53.001630,0,benchmarks/results/phaseG-windowed-targets90-logs/complevels_ZOOM.lvl__-prioritized.log
