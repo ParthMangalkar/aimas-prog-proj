@@ -1,4 +1,5 @@
 #include "aimas/solver.hpp"
+#include "aimas/compact.hpp"
 #include "aimas/pibt.hpp"
 
 #include <algorithm>
@@ -1874,20 +1875,29 @@ bool Solver::solve_once(std::vector<Task> tasks)
 
 std::vector<std::vector<int>> Solver::solve()
 {
+    auto finalize = [&](std::vector<std::vector<int>> plan)
+        -> std::vector<std::vector<int>> {
+        if (plan.empty()) return plan;
+        // Post-processing: greedy interleaving of independent per-agent
+        // actions so the server (and the GUI) executes them in parallel.
+        // Safe by construction — falls back to `plan` if verification fails.
+        return compact_plan(plan, initial_state_);
+    };
+
     auto variants = build_task_variants();
     if (variants.empty()) {
         // Either no box tasks at all (pure agent-positioning level), or no
         // feasible matching. Try one empty pass for the agent-only case.
         state_ = initial_state_;
         plan_.clear();
-        if (solve_once({})) return plan_;
+        if (solve_once({})) return finalize(plan_);
         return {};
     }
 
     for (std::size_t i = 0; i < variants.size(); ++i) {
         state_ = initial_state_;
         plan_.clear();
-        if (solve_once(variants[i])) return plan_;
+        if (solve_once(variants[i])) return finalize(plan_);
     }
 
     return {};

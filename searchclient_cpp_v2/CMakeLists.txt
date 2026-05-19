@@ -20,6 +20,7 @@ add_executable(searchclient_cpp_v2
     src/topology.cpp
     src/single_box.cpp
     src/pibt.cpp
+    src/compact.cpp
     src/solver.cpp
 )
 
@@ -33,6 +34,7 @@ add_executable(v2_tests
     src/topology.cpp
     src/single_box.cpp
     src/pibt.cpp
+    src/compact.cpp
     src/solver.cpp
 )
 target_include_directories(v2_tests PRIVATE include)
