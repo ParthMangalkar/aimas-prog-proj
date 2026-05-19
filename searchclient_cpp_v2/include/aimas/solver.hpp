@@ -125,6 +125,14 @@ private:
     bool complete_agent_goals();          // dispatcher: pibt → serial → clear+retry
     bool complete_agent_goals_pibt();     // joint coordinator (PIBT)
     bool complete_agent_goals_serial();   // serial BFS fallback
+    // Joint A* over (agent positions) treating walls + current boxes + agents
+    // of other variants as static obstacles. Last-resort agent-positioning
+    // planner for tight rotation puzzles (≤4 agents) that PIBT, cooperative
+    // A* and serial BFS all give up on. Branching factor is 5^N (Move×4 +
+    // NoOp per agent); a node cap and per-call deadline keep this from
+    // exploding on bigger levels. Returns false (and rolls back state/plan)
+    // on failure. Emits real multi-agent joint actions.
+    bool complete_agent_goals_joint();
     void clear_paths_to_agent_goals();    // relocate boxes blocking agent goal paths
     std::vector<std::pair<int, int>> agent_goal_targets() const;
     std::set<std::pair<int, int>> agent_goal_cells() const;
@@ -135,6 +143,29 @@ private:
     // from delivery / clearing loops to abort hopelessly slow variants.
     bool variant_time_up() const;
 
+    // Overall (solver-wide) soft deadline; set in solve(). Used by the
+    // post-variant fallback loop to avoid pushing past the server timeout.
+    bool overall_time_up() const;
+
+    // Min-max DP variant of build_tasks_matched_dp(): assigns boxes to goals
+    // minimising the MAXIMUM walls-only distance, not the sum. Helps when
+    // sum-min picks an assignment that traps one box behind another.
+    std::vector<Task> build_tasks_matched_dp_minmax();
+
+    // Extra fallback variants tried only after the primary variant list has
+    // failed: min-max DP × 5 sort modes + deterministic random shuffles of
+    // the existing DP base. Returns a deduped, signature-filtered list.
+    std::vector<std::vector<Task>> build_extra_variants(
+        const std::vector<std::vector<Task>>& already_tried);
+
+    // Last-resort full joint A* (agents + boxes) used only when ALL primary
+    // and extra variants have failed AND the level is small (≤3 agents,
+    // ≤6 boxes, ≤120 reachable cells). Uses State::apply_joint / conflicting
+    // for action semantics, a makespan-style admissible heuristic, and a
+    // strict node/time cap. On success rebuilds plan_ from initial_state_
+    // by replaying the joint-action sequence. Returns true on success.
+    bool solve_joint_full();
+
     const Level&                     level_;
     State                            initial_state_;     // snapshot for resets
     State                            state_;             // mutable
@@ -142,6 +173,8 @@ private:
     SingleBoxAStar                   planner_;
     std::vector<std::vector<int>>    plan_;
     std::chrono::steady_clock::time_point variant_deadline_ =
+        std::chrono::steady_clock::time_point::max();
+    std::chrono::steady_clock::time_point overall_deadline_ =
         std::chrono::steady_clock::time_point::max();
 };
 

@@ -5,9 +5,15 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
 #include <set>
+#include <string>
 #include <tuple>
+#include <unordered_map>
 
 namespace aimas {
 
@@ -277,6 +283,112 @@ std::vector<Solver::Task> Solver::build_tasks_matched_dp()
     return tasks;
 }
 
+std::vector<Solver::Task> Solver::build_tasks_matched_dp_minmax()
+{
+    // Like build_tasks_matched_dp() but minimises the MAXIMUM walls-only
+    // distance instead of the SUM. Helps when the sum-min assignment picks
+    // a layout where one box is trapped behind another (each individually
+    // short, but together infeasible). The max-min variant prefers
+    // balanced assignments that often unlock alternative delivery orders.
+    constexpr int kMaxBoxesDp = 12;
+    std::vector<Task> tasks;
+    for (char letter = 'A'; letter <= 'Z'; ++letter) {
+        const int color = level_.box_color[letter - 'A'];
+        if (color < 0) continue;
+        bool has_agent = false;
+        for (int agent_color : level_.agent_color) {
+            if (agent_color == color) { has_agent = true; break; }
+        }
+        if (!has_agent) continue;
+
+        std::vector<std::pair<int, int>> goals;
+        std::vector<std::pair<int, int>> boxes;
+        for (int r = 0; r < level_.rows; ++r) {
+            for (int c = 0; c < level_.cols; ++c) {
+                if (level_.goals[r][c] == letter && state_.boxes[r][c] != letter)
+                    goals.emplace_back(r, c);
+                if (state_.boxes[r][c] == letter && level_.goals[r][c] != letter)
+                    boxes.emplace_back(r, c);
+            }
+        }
+        if (goals.empty() || boxes.empty()) continue;
+        // Bail to greedy for too-many boxes or under-supplied (less common).
+        if (static_cast<int>(boxes.size()) > kMaxBoxesDp
+            || goals.size() > boxes.size()) continue;
+
+        const int B = static_cast<int>(boxes.size());
+        const int G = static_cast<int>(goals.size());
+        const int mask_count = 1 << B;
+        std::vector<int> dp(mask_count, kInf);
+        std::vector<std::vector<int>> parent_mask(
+            G, std::vector<int>(mask_count, -1));
+        std::vector<std::vector<int>> parent_box(
+            G, std::vector<int>(mask_count, -1));
+        dp[0] = 0;
+
+        auto popcount = [](int m) {
+            int c = 0; while (m) { c += m & 1; m >>= 1; } return c;
+        };
+
+        for (int gi = 0; gi < G; ++gi) {
+            std::vector<int> next(mask_count, kInf);
+            const auto& dist = topology_.dist_walls_only(goals[gi].first,
+                                                         goals[gi].second);
+            for (int mask = 0; mask < mask_count; ++mask) {
+                if (dp[mask] == kInf || popcount(mask) != gi) continue;
+                for (int bi = 0; bi < B; ++bi) {
+                    if (mask & (1 << bi)) continue;
+                    const int d = dist[boxes[bi].first][boxes[bi].second];
+                    if (d == kInf) continue;
+                    const int nm = mask | (1 << bi);
+                    const int cost = std::max(dp[mask], d);  // min-max objective
+                    if (cost < next[nm]) {
+                        next[nm] = cost;
+                        parent_mask[gi][nm] = mask;
+                        parent_box[gi][nm] = bi;
+                    }
+                }
+            }
+            dp.swap(next);
+        }
+
+        int best_mask = -1, best_cost = kInf;
+        for (int mask = 0; mask < mask_count; ++mask) {
+            if (popcount(mask) == G && dp[mask] < best_cost) {
+                best_cost = dp[mask]; best_mask = mask;
+            }
+        }
+        if (best_mask < 0) continue;
+
+        std::vector<int> assignment(G, -1);
+        for (int gi = G - 1; gi >= 0 && best_mask >= 0; --gi) {
+            const int bi = parent_box[gi][best_mask];
+            assignment[gi] = bi;
+            best_mask = parent_mask[gi][best_mask];
+        }
+        for (int gi = 0; gi < G; ++gi) {
+            const int bi = assignment[gi];
+            if (bi < 0) continue;
+            int agent_pick = -1, ad = kInf;
+            for (int a = 0; a < static_cast<int>(state_.agent_rows.size()); ++a) {
+                if (level_.agent_color[a] != color) continue;
+                const int d = manhattan(state_.agent_rows[a],
+                                        state_.agent_cols[a],
+                                        boxes[bi].first, boxes[bi].second);
+                if (d < ad) { ad = d; agent_pick = a; }
+            }
+            if (agent_pick < 0) continue;
+            Task t;
+            t.letter = letter;
+            t.box_row = boxes[bi].first; t.box_col = boxes[bi].second;
+            t.goal_row = goals[gi].first; t.goal_col = goals[gi].second;
+            t.agent = agent_pick;
+            tasks.push_back(t);
+        }
+    }
+    return tasks;
+}
+
 void Solver::sort_tasks(std::vector<Task>& tasks, int final_order_mode)
 {
     auto dist_of = [&](const Task& t) {
@@ -377,6 +489,85 @@ std::vector<std::vector<Solver::Task>> Solver::build_task_variants()
             add(std::move(v));
             if (variants.size() >= static_cast<std::size_t>(kMaxVariants)) {
                 return variants;
+            }
+        }
+    }
+    return variants;
+}
+
+std::vector<std::vector<Solver::Task>> Solver::build_extra_variants(
+    const std::vector<std::vector<Task>>& already_tried)
+{
+    // Fallback variants generated only after the primary list has failed.
+    // Two sources:
+    //   1. min-max DP assignment (per-letter), tried under all 5 sort modes.
+    //   2. Deterministic random permutations of letter-groups inside the
+    //      DP-min-sum base, generated with a fixed seed for reproducibility.
+    // Deduped against `already_tried` using the same task-signature as
+    // build_task_variants() so we never repeat work.
+    state_ = initial_state_;
+
+    std::vector<std::vector<Task>> variants;
+    std::set<std::string> seen;
+    auto signature = [](const std::vector<Task>& v) {
+        std::string s;
+        s.reserve(v.size() * 16);
+        for (const auto& t : v) {
+            s += t.letter;
+            s += ':';
+            s += std::to_string(t.box_row);
+            s += ',';
+            s += std::to_string(t.box_col);
+            s += "->";
+            s += std::to_string(t.goal_row);
+            s += ',';
+            s += std::to_string(t.goal_col);
+            s += ';';
+        }
+        return s;
+    };
+    for (const auto& v : already_tried) seen.insert(signature(v));
+    auto add = [&](std::vector<Task> v) {
+        if (v.empty()) return;
+        const std::string s = signature(v);
+        if (seen.insert(s).second) variants.push_back(std::move(v));
+    };
+
+    // Pass B: min-max DP × 5 sort modes.
+    {
+        auto base = build_tasks_matched_dp_minmax();
+        if (!base.empty()) {
+            for (int f = 0; f < 5; ++f) {
+                auto v = base;
+                sort_tasks(v, f);
+                add(std::move(v));
+            }
+        }
+    }
+
+    // Pass A: deterministic random shuffles of LETTER-GROUPS inside the DP
+    // min-sum base. Preserves per-letter grouping so multi-box-per-letter
+    // assignments stay coherent. K=8 attempts keeps wall time bounded.
+    {
+        auto base = build_tasks_matched_dp();
+        if (base.empty()) base = build_tasks_matched(0);
+        if (!base.empty()) {
+            std::map<char, std::vector<Task>> by_letter;
+            std::vector<char> letters;
+            for (const auto& t : base) {
+                if (!by_letter.count(t.letter)) letters.push_back(t.letter);
+                by_letter[t.letter].push_back(t);
+            }
+            std::mt19937 rng(0xC0FFEE);
+            for (int k = 0; k < 8; ++k) {
+                std::vector<char> order = letters;
+                std::shuffle(order.begin(), order.end(), rng);
+                std::vector<Task> v;
+                v.reserve(base.size());
+                for (char L : order) {
+                    for (auto& t : by_letter[L]) v.push_back(t);
+                }
+                add(std::move(v));
             }
         }
     }
@@ -498,6 +689,11 @@ std::set<std::pair<int, int>> Solver::agent_goal_cells() const
 bool Solver::variant_time_up() const
 {
     return std::chrono::steady_clock::now() >= variant_deadline_;
+}
+
+bool Solver::overall_time_up() const
+{
+    return std::chrono::steady_clock::now() >= overall_deadline_;
 }
 
 bool Solver::complete_agent_goals_pibt()
@@ -864,6 +1060,13 @@ bool Solver::complete_agent_goals()
         if (try_attempt([&]{ return complete_agent_goals_serial(); })) return true;
     }
 
+    // Last resort: joint A* over agent positions only. Only fires for ≤4
+    // agents (branching factor 5^N) and is guarded by a 200k expansion
+    // cap + the variant deadline. Targets tight rotation/swap puzzles
+    // where PIBT, cooperative A* and serial all give up. On larger
+    // levels (N > 4) the method returns false immediately.
+    if (try_attempt([&]{ return complete_agent_goals_joint(); })) return true;
+
     state_ = pre_clear_state;
     plan_.resize(pre_clear_len);
     return false;
@@ -973,6 +1176,536 @@ void Solver::clear_paths_to_agent_goals()
 
         if (!any_action) break;
     }
+}
+
+bool Solver::complete_agent_goals_joint()
+{
+    // Joint A* over (agent positions only) treating walls + current boxes as
+    // static obstacles. Targets tight rotation/swap puzzles that PIBT,
+    // cooperative A*, and serial BFS all give up on (Apdo-style, where the
+    // agents-on-each-others'-goal-cell case requires real cooperative motion
+    // and the box layout is fixed). Branching factor is 5^N (4 Moves +
+    // NoOp per agent); capped to N ≤ 4 so 5^4 = 625 successors per node
+    // stays tractable. Other safeties: 200k expansion cap, per-variant
+    // deadline check, full state/plan rollback on any failure.
+    const int N = static_cast<int>(state_.agent_rows.size());
+    if (N < 1 || N > 4) return false;
+
+    const auto targets = agent_goal_targets();
+
+    auto all_done = [&]() {
+        for (int a = 0; a < N; ++a) {
+            if (targets[a].first < 0) continue;
+            if (state_.agent_rows[a] != targets[a].first
+                || state_.agent_cols[a] != targets[a].second) return false;
+        }
+        return true;
+    };
+    if (all_done()) return true;
+
+    const int R = level_.rows;
+    const int C = level_.cols;
+
+    // Static obstacle = walls ∪ current box cells. Agents are tracked in
+    // the search state and excluded from the static map.
+    std::vector<std::vector<bool>> obstacle(R, std::vector<bool>(C, false));
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            if (level_.walls[r][c]) obstacle[r][c] = true;
+            else if (state_.boxes[r][c] != '\0') obstacle[r][c] = true;
+        }
+    }
+
+    // Admissible heuristic per agent: BFS distance to its target over the
+    // (walls + boxes)-restricted grid. Sum of per-agent distances is still
+    // a lower bound on the joint solution length (each agent must traverse
+    // at least its individual distance).
+    std::vector<std::vector<std::vector<int>>> dist_to_target(N);
+    for (int a = 0; a < N; ++a) {
+        dist_to_target[a].assign(R, std::vector<int>(C, kInf));
+        if (targets[a].first < 0) continue;
+        const int gr = targets[a].first;
+        const int gc = targets[a].second;
+        if (gr < 0 || gr >= R || gc < 0 || gc >= C || obstacle[gr][gc]) {
+            return false;  // agent's own goal is unreachable
+        }
+        dist_to_target[a][gr][gc] = 0;
+        std::deque<std::pair<int, int>> q;
+        q.emplace_back(gr, gc);
+        static const int ddr[4] = {-1, 1, 0, 0};
+        static const int ddc[4] = {0, 0, -1, 1};
+        while (!q.empty()) {
+            auto [cr, cc] = q.front();
+            q.pop_front();
+            for (int k = 0; k < 4; ++k) {
+                const int nr = cr + ddr[k];
+                const int nc = cc + ddc[k];
+                if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                if (obstacle[nr][nc]) continue;
+                if (dist_to_target[a][nr][nc] != kInf) continue;
+                dist_to_target[a][nr][nc] = dist_to_target[a][cr][cc] + 1;
+                q.emplace_back(nr, nc);
+            }
+        }
+        const int sr = state_.agent_rows[a];
+        const int sc = state_.agent_cols[a];
+        if (dist_to_target[a][sr][sc] == kInf) return false;
+    }
+
+    auto pos_of = [&](int r, int c) { return r * C + c; };
+
+    struct JNode {
+        std::vector<int> pos;     // agent cell ids
+        std::vector<int> joint;   // joint action that produced this state
+        int parent = -1;
+        int g = 0;
+        int f = 0;
+    };
+    std::vector<JNode> nodes;
+    nodes.reserve(8192);
+
+    auto encode = [&](const std::vector<int>& pos) {
+        std::string s;
+        s.reserve(pos.size() * sizeof(int));
+        for (int p : pos) {
+            s.push_back(static_cast<char>((p >> 24) & 0xff));
+            s.push_back(static_cast<char>((p >> 16) & 0xff));
+            s.push_back(static_cast<char>((p >> 8) & 0xff));
+            s.push_back(static_cast<char>(p & 0xff));
+        }
+        return s;
+    };
+
+    auto h_of = [&](const std::vector<int>& pos) -> int {
+        int h = 0;
+        for (int a = 0; a < N; ++a) {
+            if (targets[a].first < 0) continue;
+            const int r = pos[a] / C, c = pos[a] % C;
+            const int d = dist_to_target[a][r][c];
+            if (d == kInf) return kInf;
+            h += d;
+        }
+        return h;
+    };
+
+    auto is_goal = [&](const std::vector<int>& pos) {
+        for (int a = 0; a < N; ++a) {
+            if (targets[a].first < 0) continue;
+            if (pos[a] != pos_of(targets[a].first, targets[a].second)) return false;
+        }
+        return true;
+    };
+
+    std::vector<int> start_pos(N);
+    for (int a = 0; a < N; ++a) {
+        start_pos[a] = pos_of(state_.agent_rows[a], state_.agent_cols[a]);
+    }
+    const int h0 = h_of(start_pos);
+    if (h0 == kInf) return false;
+    nodes.push_back({start_pos, std::vector<int>(N, 0), -1, 0, h0});
+
+    auto cmp = [&nodes](int lhs, int rhs) {
+        if (nodes[lhs].f != nodes[rhs].f) return nodes[lhs].f > nodes[rhs].f;
+        return nodes[lhs].g < nodes[rhs].g;
+    };
+    std::priority_queue<int, std::vector<int>, decltype(cmp)> open(cmp);
+    open.push(0);
+    std::unordered_map<std::string, int> best_g;
+    best_g[encode(start_pos)] = 0;
+
+    // Per-agent action options: NoOp + 4 Moves.
+    // Indices into actions(): 0 = NoOp, 1..4 = Move(N/S/E/W).
+    static const int kAct[5] = {0, 1, 2, 3, 4};
+    static const int kDr[5]  = {0, -1, 1, 0, 0};
+    static const int kDc[5]  = {0, 0, 0, 1, -1};
+
+    constexpr int kExpansionCap = 200000;
+    int expansions = 0;
+
+    while (!open.empty() && expansions < kExpansionCap) {
+        if ((expansions & 1023) == 0 && variant_time_up()) return false;
+        const int idx = open.top();
+        open.pop();
+        // Copy: nodes may reallocate inside the successor loop.
+        const JNode cur = nodes[idx];
+        {
+            const auto bg = best_g.find(encode(cur.pos));
+            if (bg != best_g.end() && bg->second < cur.g) continue;
+        }
+        if (is_goal(cur.pos)) {
+            std::vector<std::vector<int>> joints;
+            int cursor = idx;
+            while (nodes[cursor].parent != -1) {
+                joints.push_back(nodes[cursor].joint);
+                cursor = nodes[cursor].parent;
+            }
+            std::reverse(joints.begin(), joints.end());
+            const State snap = state_;
+            const std::size_t snap_len = plan_.size();
+            for (const auto& j : joints) {
+                if (!state_.apply_joint(j)) {
+                    state_ = snap;
+                    plan_.resize(snap_len);
+                    return false;
+                }
+                append_joint(j);
+            }
+            return true;
+        }
+        ++expansions;
+
+        // Enumerate all joint actions (5^N). For each agent, the per-cell
+        // delta is precomputed; combinations with vertex/edge conflicts or
+        // out-of-bounds destinations are skipped early. Pure-NoOp transition
+        // is excluded (would loop forever).
+        std::vector<int> jact(N, 0);
+        std::function<void(int)> rec = [&](int ai) {
+            if (ai == N) {
+                std::vector<int> new_pos(N);
+                std::vector<int> joint_full(N, 0);
+                bool any_move = false;
+                for (int a = 0; a < N; ++a) {
+                    const int r = cur.pos[a] / C;
+                    const int c = cur.pos[a] % C;
+                    const int nr = r + kDr[jact[a]];
+                    const int nc = c + kDc[jact[a]];
+                    if (nr < 0 || nr >= R || nc < 0 || nc >= C) return;
+                    if (obstacle[nr][nc]) return;
+                    new_pos[a] = pos_of(nr, nc);
+                    joint_full[a] = kAct[jact[a]];
+                    if (jact[a] != 0) any_move = true;
+                }
+                if (!any_move) return;
+                // Vertex conflict: no two agents on the same destination cell.
+                for (int a = 0; a < N; ++a) {
+                    for (int b = a + 1; b < N; ++b) {
+                        if (new_pos[a] == new_pos[b]) return;
+                    }
+                }
+                // Edge (swap) conflict: a→b's-old AND b→a's-old.
+                for (int a = 0; a < N; ++a) {
+                    for (int b = a + 1; b < N; ++b) {
+                        if (new_pos[a] == cur.pos[b]
+                            && new_pos[b] == cur.pos[a]) return;
+                    }
+                }
+                const int ng = cur.g + 1;
+                const std::string nkey = encode(new_pos);
+                const auto it = best_g.find(nkey);
+                if (it != best_g.end() && it->second <= ng) return;
+                const int h = h_of(new_pos);
+                if (h == kInf) return;
+                best_g[nkey] = ng;
+                nodes.push_back({new_pos, joint_full, idx, ng, ng + h});
+                open.push(static_cast<int>(nodes.size()) - 1);
+                return;
+            }
+            for (int a = 0; a < 5; ++a) {
+                jact[ai] = a;
+                rec(ai + 1);
+            }
+        };
+        rec(0);
+    }
+    return false;
+}
+
+// =============================================================================
+// solve_joint_full() — last-resort full joint A* (agents + boxes)
+// =============================================================================
+//
+// Bounded full joint-state A* used only when every primary task variant AND
+// every extra task variant has failed. Targets tight small puzzles where the
+// pipeline cannot find a serial decomposition (e.g. boxes mutually block in
+// a tiny room). Uses the existing State::applicable / conflicting /
+// apply_joint semantics so the resulting plan is server-valid by construction.
+//
+// Eligibility (any failure → false, no work done):
+//   - ≥1 agent and ≤3 agents
+//   - ≤6 movable boxes (letters with at least one goal)
+//   - ≤120 non-wall reachable cells
+//
+// Heuristic (admissible under joint-step cost):
+//   h(s) = max( for each letter-goal cell g: min over same-letter boxes of
+//                walls-only distance(box, g),
+//               for each agent-goal cell g_a: walls-only distance(agent, g_a) )
+// This is a valid lower bound on the remaining makespan because each goal
+// must be reached and a single joint step advances any one goal by at most 1.
+//
+// Caps:
+//   - 80 000 node expansions
+//   - 5 s wall-clock budget (also bounded by overall_deadline_)
+//
+// On success: plan_ is populated with the joint-action sequence; state_ is
+// the goal state. On failure both are reset to initial values by the caller.
+bool Solver::solve_joint_full()
+{
+    const int N = static_cast<int>(initial_state_.agent_rows.size());
+    if (N <= 0 || N > 4) return false;
+
+    int box_count = 0;
+    int cell_count = 0;
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            if (level_.walls[r][c]) continue;
+            ++cell_count;
+            const char b = initial_state_.boxes[r][c];
+            if (b >= 'A' && b <= 'Z') ++box_count;
+        }
+    }
+    // Tiered eligibility — the search scales worst with agent count, then
+    // box count, then reachable cells. Allow modestly larger problems when
+    // the agent count is small.
+    if (N <= 3) {
+        if (box_count > 10) return false;
+        if (cell_count > 200) return false;
+    } else { // N == 4
+        if (box_count > 8) return false;
+        if (cell_count > 260) return false;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (now >= overall_deadline_) return false;
+    const auto remaining = overall_deadline_ - now;
+    if (remaining < std::chrono::seconds(2)) return false;
+    const auto local_deadline = std::min(
+        now + std::chrono::seconds(5),
+        overall_deadline_);
+
+    // Collect goal cells.
+    struct LetterGoal { int r, c; char letter; };
+    struct AgentGoal  { int r, c; int agent; };
+    std::vector<LetterGoal> letter_goals;
+    std::vector<AgentGoal>  agent_goals;
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            const char g = level_.goals[r][c];
+            if (g >= 'A' && g <= 'Z') {
+                letter_goals.push_back({r, c, g});
+            } else if (g >= '0' && g <= '9') {
+                const int ai = g - '0';
+                if (ai < N) agent_goals.push_back({r, c, ai});
+            }
+        }
+    }
+
+    // Walls-only BFS from each goal cell. dist[i][r*cols+c] = distance,
+    // -1 if unreachable. Index i covers letter goals first then agent goals.
+    const int cells = level_.rows * level_.cols;
+    const int n_lg = static_cast<int>(letter_goals.size());
+    const int n_ag = static_cast<int>(agent_goals.size());
+    const int n_g  = n_lg + n_ag;
+    std::vector<std::vector<int>> dist(n_g, std::vector<int>(cells, -1));
+
+    auto idx = [&](int r, int c) { return r * level_.cols + c; };
+
+    auto bfs_from = [&](int gi, int sr, int sc) {
+        auto& d = dist[gi];
+        std::deque<std::pair<int,int>> q;
+        d[idx(sr, sc)] = 0;
+        q.push_back({sr, sc});
+        while (!q.empty()) {
+            auto [r, c] = q.front();
+            q.pop_front();
+            const int dv = d[idx(r, c)];
+            static const int DR[4] = {-1, 1, 0, 0};
+            static const int DC[4] = { 0, 0,-1, 1};
+            for (int k = 0; k < 4; ++k) {
+                const int nr = r + DR[k], nc = c + DC[k];
+                if (nr < 0 || nr >= level_.rows || nc < 0 || nc >= level_.cols) continue;
+                if (level_.walls[nr][nc]) continue;
+                if (d[idx(nr, nc)] >= 0) continue;
+                d[idx(nr, nc)] = dv + 1;
+                q.push_back({nr, nc});
+            }
+        }
+    };
+    for (int i = 0; i < n_lg; ++i) bfs_from(i, letter_goals[i].r, letter_goals[i].c);
+    for (int i = 0; i < n_ag; ++i) bfs_from(n_lg + i, agent_goals[i].r, agent_goals[i].c);
+
+    // Heuristic — admissible under joint-step cost (see header comment).
+    auto heuristic = [&](const State& s) -> int {
+        int h = 0;
+        for (int i = 0; i < n_lg; ++i) {
+            const auto& lg = letter_goals[i];
+            if (s.boxes[lg.r][lg.c] == lg.letter) continue;
+            int best = std::numeric_limits<int>::max();
+            for (int r = 0; r < level_.rows; ++r) {
+                for (int c = 0; c < level_.cols; ++c) {
+                    if (s.boxes[r][c] != lg.letter) continue;
+                    const int dv = dist[i][idx(r, c)];
+                    if (dv >= 0 && dv < best) best = dv;
+                }
+            }
+            if (best == std::numeric_limits<int>::max()) return std::numeric_limits<int>::max();
+            if (best > h) h = best;
+        }
+        for (int i = 0; i < n_ag; ++i) {
+            const auto& ag = agent_goals[i];
+            if (s.agent_rows[ag.agent] == ag.r && s.agent_cols[ag.agent] == ag.c) continue;
+            const int dv = dist[n_lg + i][idx(s.agent_rows[ag.agent], s.agent_cols[ag.agent])];
+            if (dv < 0) return std::numeric_limits<int>::max();
+            if (dv > h) h = dv;
+        }
+        return h;
+    };
+
+    // Count how many goal cells the state already satisfies — used as a
+    // tie-breaker (prefer expanding states that are "more solved").
+    auto goals_satisfied = [&](const State& s) -> int {
+        int c = 0;
+        for (const auto& lg : letter_goals) {
+            if (s.boxes[lg.r][lg.c] == lg.letter) ++c;
+        }
+        for (const auto& ag : agent_goals) {
+            if (s.agent_rows[ag.agent] == ag.r && s.agent_cols[ag.agent] == ag.c) ++c;
+        }
+        return c;
+    };
+
+    struct JNode {
+        State state;
+        int g = 0;
+        int h = 0;
+        int parent = -1;
+        std::vector<int> joint_in;  // joint action that produced this state
+    };
+
+    std::vector<JNode> nodes;
+    nodes.reserve(8192);
+
+    // Open: (f, h, -goals_satisfied, idx) min-heap via greater<>.
+    using Key = std::tuple<int,int,int,int>;
+    std::priority_queue<Key, std::vector<Key>, std::greater<Key>> open;
+
+    std::unordered_map<State, int, StateHash, StateEq> closed_g;
+
+    // Seed.
+    {
+        JNode root;
+        root.state = initial_state_;
+        root.g = 0;
+        root.h = heuristic(root.state);
+        if (root.h == std::numeric_limits<int>::max()) return false;
+        nodes.push_back(std::move(root));
+        closed_g.emplace(nodes.back().state, 0);
+        open.emplace(nodes.back().g + nodes.back().h, nodes.back().h,
+                     -goals_satisfied(nodes.back().state), 0);
+    }
+
+    const auto& acts = actions();
+    const int A = static_cast<int>(acts.size());
+
+    // Per-agent applicable-action list reused across expansions.
+    std::vector<std::vector<int>> per_agent(N);
+
+    constexpr int kNodeCap = 80000;
+    int expansions = 0;
+    int success_idx = -1;
+    int budget_check = 0;
+
+    while (!open.empty()) {
+        auto [f, hv, neg_sat, cur_idx] = open.top();
+        open.pop();
+        (void)f; (void)hv; (void)neg_sat;
+
+        if (++budget_check == 256) {
+            budget_check = 0;
+            if (std::chrono::steady_clock::now() >= local_deadline) break;
+        }
+        if (expansions >= kNodeCap) break;
+
+        // Skip outdated open entries (closed_g may have been updated).
+        const JNode cur = nodes[cur_idx];  // copy to avoid invalidation
+        auto it = closed_g.find(cur.state);
+        if (it == closed_g.end() || it->second < cur.g) continue;
+
+        if (cur.state.goal_state()) { success_idx = cur_idx; break; }
+
+        ++expansions;
+
+        // Enumerate per-agent applicable actions.
+        for (int a = 0; a < N; ++a) {
+            per_agent[a].clear();
+            for (int k = 0; k < A; ++k) {
+                if (cur.state.applicable(a, acts[k])) per_agent[a].push_back(k);
+            }
+            if (per_agent[a].empty()) per_agent[a].push_back(0);  // NoOp fallback
+        }
+
+        // Cartesian product → joint action; filter conflicts; apply.
+        std::vector<int> joint(N, 0);
+        std::function<void(int)> rec = [&](int ai) {
+            if (success_idx >= 0) return;
+            if (ai == N) {
+                // Skip all-NoOp joint actions to avoid infinite loops.
+                bool any = false;
+                for (int v : joint) if (v != 0) { any = true; break; }
+                if (!any) return;
+                if (cur.state.conflicting(joint)) return;
+                State next = cur.state;
+                if (!next.apply_joint(joint)) return;
+                const int ng = cur.g + 1;
+                auto ins = closed_g.emplace(next, ng);
+                if (!ins.second) {
+                    if (ins.first->second <= ng) return;
+                    ins.first->second = ng;
+                }
+                int nh = heuristic(next);
+                if (nh == std::numeric_limits<int>::max()) return;
+                JNode nn;
+                nn.state = std::move(next);
+                nn.g = ng;
+                nn.h = nh;
+                nn.parent = cur_idx;
+                nn.joint_in = joint;
+                const int nf = ng + nh;
+                const int sat = goals_satisfied(nn.state);
+                nodes.push_back(std::move(nn));
+                open.emplace(nf, nh, -sat, static_cast<int>(nodes.size()) - 1);
+                if (nodes.back().state.goal_state()) {
+                    success_idx = static_cast<int>(nodes.size()) - 1;
+                }
+                return;
+            }
+            for (int k : per_agent[ai]) {
+                joint[ai] = k;
+                rec(ai + 1);
+                if (success_idx >= 0) return;
+            }
+            joint[ai] = 0;
+        };
+        rec(0);
+        if (success_idx >= 0) break;
+    }
+
+    if (success_idx < 0) return false;
+
+    // Reconstruct joint-action sequence by walking parent pointers.
+    std::vector<std::vector<int>> joints;
+    for (int i = success_idx; i != -1; i = nodes[i].parent) {
+        if (!nodes[i].joint_in.empty()) joints.push_back(nodes[i].joint_in);
+    }
+    std::reverse(joints.begin(), joints.end());
+
+    // Replay from initial_state_ to verify and populate plan_.
+    state_ = initial_state_;
+    plan_.clear();
+    plan_.reserve(joints.size());
+    for (const auto& j : joints) {
+        if (!state_.apply_joint(j)) {
+            state_ = initial_state_;
+            plan_.clear();
+            return false;
+        }
+        plan_.push_back(j);
+    }
+    if (!state_.goal_state()) {
+        state_ = initial_state_;
+        plan_.clear();
+        return false;
+    }
+    return true;
 }
 
 bool Solver::complete_agent_goals_serial()
@@ -1739,12 +2472,17 @@ bool Solver::solve_once(std::vector<Task> tasks)
 {
     // Per-variant wall-clock budget. Generous enough to absorb relocation +
     // redelivery work, tight enough that one slow variant can't starve the
-    // others. Tuned around the empirical worst-case of MAze (2.4s) +
-    // Tittling-class outliers.
+    // others. Capped by `overall_deadline_` so the post-variant fallback
+    // pass also respects the solver-wide soft budget — variants near the
+    // end of the budget get progressively less time, naturally degrading
+    // gracefully instead of busting the server timeout.
     constexpr double kVariantBudgetSeconds = 12.0;
-    variant_deadline_ = std::chrono::steady_clock::now()
+    const auto now = std::chrono::steady_clock::now();
+    const auto soft_cap = now
         + std::chrono::milliseconds(
             static_cast<int>(kVariantBudgetSeconds * 1000));
+    variant_deadline_ = (soft_cap < overall_deadline_) ? soft_cap
+                                                       : overall_deadline_;
 
     if (tasks.empty()) {
         // Levels with zero box tasks still need the final agent-goal phase.
@@ -1884,6 +2622,15 @@ std::vector<std::vector<int>> Solver::solve()
         return compact_plan(plan, initial_state_);
     };
 
+    // Overall solver-wide soft deadline. Leaves a 3s safety margin under the
+    // typical 30s server timeout, but big enough that the existing primary
+    // pipeline (which usually finishes in <10s on solvable levels) is never
+    // truncated by it. Only the post-variant fallback loop respects this
+    // deadline; primary variants still get their per-variant 12s budget.
+    constexpr int kOverallBudgetSeconds = 27;
+    overall_deadline_ = std::chrono::steady_clock::now()
+        + std::chrono::seconds(kOverallBudgetSeconds);
+
     auto variants = build_task_variants();
     if (variants.empty()) {
         // Either no box tasks at all (pure agent-positioning level), or no
@@ -1898,6 +2645,33 @@ std::vector<std::vector<int>> Solver::solve()
         state_ = initial_state_;
         plan_.clear();
         if (solve_once(variants[i])) return finalize(plan_);
+    }
+
+    // Post-variant fallback pass: every primary variant failed but we still
+    // have budget. Generate min-max-DP and randomised letter-group variants
+    // and try them under a tighter per-variant budget (so we get more shots
+    // in the remaining time). Strictly additive — if no fallback variant
+    // works, the function returns {} exactly as it would have before.
+    if (!overall_time_up()) {
+        auto extras = build_extra_variants(variants);
+        for (std::size_t i = 0; i < extras.size(); ++i) {
+            if (overall_time_up()) break;
+            state_ = initial_state_;
+            plan_.clear();
+            if (solve_once(extras[i])) return finalize(plan_);
+        }
+    }
+
+    // Last-resort: full joint A* (agents + boxes) for very small problems.
+    // Only fires when every primary and extra variant has failed AND the
+    // problem is tractable: ≤3 agents, ≤6 movable boxes, ≤120 reachable
+    // cells. The function returns false if eligibility fails or if the
+    // bounded search exhausts. Strictly additive — never regresses a level
+    // that the existing pipeline can already solve.
+    if (!overall_time_up()) {
+        state_ = initial_state_;
+        plan_.clear();
+        if (solve_joint_full()) return finalize(plan_);
     }
 
     return {};

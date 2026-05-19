@@ -1,11 +1,21 @@
 #include "aimas/compact.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <utility>
 
 namespace aimas {
 
 namespace {
+
+bool verbose_logging()
+{
+    static const bool v = []() {
+        const char* env = std::getenv("V2_VERBOSE");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+    return v;
+}
 
 // Replay `plan` from `s` (mutated in place). Returns true on full success.
 bool replay_plan(State& s, const std::vector<std::vector<int>>& plan)
@@ -193,15 +203,17 @@ std::vector<std::vector<int>> compact_plan(
     auto best = (g_n <= w_n) ? std::move(via_greedy) : std::move(via_window);
     const std::size_t best_n = best.size();
 
-    if (best_n < orig_n) {
-        std::cerr << "[v2] Compacted plan: " << orig_n
-                  << " -> " << best_n << " joint actions ("
-                  << (100.0 * (orig_n - best_n)) / orig_n
-                  << "% reduction; greedy=" << g_n
-                  << ", window=" << w_n << ").\n";
-    } else {
-        std::cerr << "[v2] Compaction found no parallelism (kept "
-                  << orig_n << " joint actions).\n";
+    if (verbose_logging()) {
+        if (best_n < orig_n) {
+            std::cerr << "[v2] Compacted plan: " << orig_n
+                      << " -> " << best_n << " joint actions ("
+                      << (100.0 * (orig_n - best_n)) / orig_n
+                      << "% reduction; greedy=" << g_n
+                      << ", window=" << w_n << ").\n";
+        } else {
+            std::cerr << "[v2] Compaction found no parallelism (kept "
+                      << orig_n << " joint actions).\n";
+        }
     }
 
     return best;
