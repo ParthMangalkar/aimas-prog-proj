@@ -1,256 +1,180 @@
-# AIMAS Hospital Solver
+# AIMAS Hospital Solver — `searchclient_cpp_v2`
 
-This repository contains the current C++ AIMAS hospital-domain solver and the
-supporting benchmark tooling used to validate it against the Java server.
+C++17 search client for the DTU 02285 **AIMAS Hospital
+(Multi-Agent Path Finding with Boxes)** domain, together with the
+Java validation server and the benchmark tooling used to validate it.
 
-The active implementation is a hybrid C++ solver centered on prioritized
-planning, serial fallback planning, and bounded weighted A* fallback. It is not
-the older pure graph-search client, and the dormant MAPF experiment code is not
-linked into the default solver.
+> **Status (r19):** **73 / 116** levels solved — 28 / 47 on
+> `complevels` and 45 / 69 on `complevels_2026`. +11 over the
+> previous in-house single-file C++ solver (62 / 116), in ~25 %
+> less code.
 
-## Current status
+---
 
-The current verified baseline uses `searchclient_cpp -prioritized` through
-`misc/server.jar`, normalized level input, and a 180 second timeout. It combines
-the previous full benchmark with a recheck of every listed solved level and the
-newly parser-fixed `complevels/rooMbA.lvl`.
+## Table of contents
 
-| Level folder | Solved | Total |
-|---|---:|---:|
-| `levels` | 90 | 104 |
-| `new_comp_levels` | 0 | 6 |
-| `complevels` | 26 | 47 |
+- [What's in this repository](#whats-in-this-repository)
+- [Quick start](#quick-start)
+- [Benchmarks](#benchmarks)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Course context](#course-context)
 
-`AIMAS_LNS_REPAIR=1` enables an experimental last-ditch repair pass. It is not
-default-on, but the tuned version currently solves one additional competition
-level (`complevels/MArtians.lvl`) without regressing the 116-level solved
-regression set, for an opt-in `complevels` count of 27 / 47.
+---
 
-`AIMAS_ENABLE_WINDOWED_REPLAN=1` enables an experimental full-joint
-windowed/RHCR fallback after the normal prioritized pipeline fails. It remains
-default-off: targeted testing on `BigSplit`, `Lily`, `MArtians`, `Minchia`, and
-`ZOOM` produced no additional solves, so the next high-ROI direction is a true
-decomposed MAPF/CBS or neighborhood repair adapter rather than more full-joint
-window tuning.
+## What's in this repository
 
-`AIMAS_ENABLE_CBS_REPLAN=1` enables an experimental fixed-assignment CBS
-fallback. It builds a CBS constraint tree over the existing per-agent box plans,
-branches on body/box vertex conflicts and swap conflicts, and validates any
-candidate with the normal server-style replay. This is now the cleanest
-coordination foundation in the solver, but it is still default-off: targeted
-testing on `BigSplit`, `MArtians`, and `ZOOM` produced no new solves because the
-remaining failures are usually low-level box-delivery infeasibilities before CBS
-can branch.
+| Folder / file | Purpose |
+|---|---|
+| `searchclient_cpp_v2/` | The **only** active solver. Modular C++17 implementation of the search client. |
+| `misc/server.jar` | DTU/AIMAS validation server used to score every plan. |
+| `complevels/` | Original competition level set (47 levels). |
+| `complevels_2026/` | 2026 competition level set (69 levels). |
+| `levels/`, `new_comp_levels/` | Additional / starter / experimental level sets. |
+| `direct-tests/` | Direct test assets. |
+| `benchmarks/` | Python benchmark runner + per-round CSV/Markdown/log results. |
+| `research_papers/` | Reference PDFs (PIBT, LMAPF, A\*+) cited by the solver. |
+| `ARCHITECTURE.md` | Full architectural deep-dive of the v2 solver. |
+| `searchclient_cpp_v2/README.md` | v2-specific README (Quick Start, Algorithms, Troubleshooting, Roadmap). |
+| `solved_levels.md` | Source-of-truth per-level results table. |
+| `PPT_HELP.md` | Presentation/video preparation guide. |
 
-The solved-level source of truth is:
+There is no `searchclient_cpp`, `searchclient_cpp_enhanced`, or
+`searchclient_java` folder anymore — they were intermediate code
+paths that were fully superseded by `searchclient_cpp_v2` and have
+been removed (see commits `8536c81` and `52af1b5`).
 
-```text
-searchclient_cpp/solved_levels.md
+---
+
+## Quick start
+
+```bash
+# 1. Build (Release)
+cmake -S searchclient_cpp_v2 -B searchclient_cpp_v2/build \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build searchclient_cpp_v2/build -- -j4
+
+# 2. Run unit tests
+./searchclient_cpp_v2/build/v2_tests
+
+# 3. Solve one level with the GUI
+java -jar misc/server.jar \
+     -l complevels_2026/donut.lvl \
+     -c "searchclient_cpp_v2/build/searchclient_cpp_v2" \
+     -t 30 -g -s 100
 ```
+
+You should see something like:
+
+```
+[v2] Parsed level 'donut' 13x15 with 4 agents.
+[v2] Plan length 122 joint actions, found in 0.002s.
+[server][info] Level solved: Yes.
+```
+
+### Requirements
+
+| Tool         | Version          | Used for                            |
+|--------------|------------------|-------------------------------------|
+| C++ compiler | C++17            | Building the client                 |
+| CMake        | ≥ 3.10           | Build configuration                 |
+| Java         | ≥ 11             | Running `misc/server.jar`           |
+| Python       | ≥ 3.9 (optional) | `benchmarks/run_all_levels.py`      |
+
+Tested on macOS (Apple Clang 14+) and Linux (GCC 9+). No external
+C++ libraries.
+
+---
+
+## Benchmarks
+
+```bash
+python3 benchmarks/run_all_levels.py \
+        --client searchclient_cpp_v2/build/searchclient_cpp_v2 \
+        --server misc/server.jar \
+        --level-root complevels_2026 \
+        --algorithm -prioritized \
+        --timeout 30 \
+        --max-joint-actions 20000 \
+        --normalize \
+        --output benchmarks/results/v2-bench-complevels-2026.csv
+```
+
+| Build                                       | complevels | complevels_2026 | Total       |
+|---------------------------------------------|-----------:|----------------:|-------------|
+| Legacy single-file C++ baseline             |          – |               – | 56 / 116    |
+| Legacy single-file C++ (enhanced)           |    27 / 47 |        35 / 69  | 62 / 116    |
+| **`searchclient_cpp_v2` (r19, current)**    |  **28/47** |       **45/69** | **73/116**  |
+
+Per-round progression (v2 baseline r4 → current r19) and per-level
+results live in `searchclient_cpp_v2/README.md` and `solved_levels.md`
+respectively. Per-level logs and CSVs are under
+`benchmarks/results/v2-bench-*`.
+
+---
 
 ## Repository layout
 
-| Path | Purpose |
+```
+aimas-prog-proj/
+├── README.md                       ← (this file)
+├── ARCHITECTURE.md                 # v2 architectural deep-dive
+├── PPT_HELP.md                     # presentation/video guide
+├── solved_levels.md                # source-of-truth solve table
+│
+├── searchclient_cpp_v2/            # the solver
+│   ├── README.md                   # v2-specific README
+│   ├── CMakeLists.txt
+│   ├── include/aimas/              # core, parser, topology, single_box, pibt, solver
+│   ├── src/                        # implementations of each header
+│   └── tests/test_main.cpp         # v2_tests (5 unit tests)
+│
+├── complevels/                     # 47 levels (original competition)
+├── complevels_2026/                # 69 levels (2026 competition)
+├── levels/                         # starter / class levels
+├── new_comp_levels/                # additional experimental levels
+│
+├── misc/
+│   ├── server.jar                  # AIMAS validation server
+│   ├── README.md                   # course-provided server notes
+│   ├── prog_proj_assignment.pdf    # the assignment brief
+│   └── ...                         # screenshots, heuristic explanation
+│
+├── benchmarks/
+│   ├── run_all_levels.py           # Python benchmark runner
+│   └── results/                    # CSV / Markdown / per-level logs
+│
+├── research_papers/                # cited algorithm references (PDFs)
+│   ├── AStar_Plus/
+│   └── LMAPF/
+│
+└── direct-tests/                   # direct test assets
+```
+
+---
+
+## Documentation
+
+| Document | Purpose |
 |---|---|
-| `searchclient_cpp/searchclient_cpp/main.cpp` | Active C++ solver implementation. Contains parsing, domain model, graph search, prioritized planner, serial fallback, and output protocol. |
-| `searchclient_cpp/searchclient_cpp/CMakeLists.txt` | Builds the active `searchclient_cpp` executable and the compile-only `mapf_experiments` target. |
-| `searchclient_cpp/searchclient_cpp/mapf/` | Dormant MAPF experiment code. It is compile-checked as `mapf_experiments` but not linked into the active solver. |
-| `levels/` | Standard assignment levels. |
-| `new_comp_levels/` | New competition levels. |
-| `complevels/` | Competition levels. |
-| `benchmarks/` | Benchmark runners, regression checker, smoke-level list, and benchmark README. |
-| `misc/` | Java server and legacy/support files. |
-| `other_misc/` | Agent handoff, implementation-change notes, and work context. |
-| `direct-tests/` | Direct test assets and folder-specific README. |
-| `ARCHITECTURE.md` | Detailed current architecture and algorithm explanation. |
-| `other_misc/IMPLEMENTATION_CHANGES.md` | Detailed record of what changed from the starting point. |
-| `other_misc/AGENT_HANDOFF.md` | Handoff notes for future improvement sessions. |
+| `searchclient_cpp_v2/README.md` | v2-specific Quick Start, Algorithms, Configuration, Troubleshooting, Roadmap, References. **Start here for using the solver.** |
+| `ARCHITECTURE.md` | Architectural deep-dive: pipeline, module dependency graph, domain model, joint-action accounting, planner internals, transactional invariants. **Start here for understanding how it works.** |
+| `solved_levels.md` | Per-level solve table (status, wall-time, joint-action count). Source of truth, regenerated from the latest benchmark CSVs. |
+| `PPT_HELP.md` | Slide-by-slide presentation outline, headline numbers, talking points, Q&A bank, video recording tips. **Use this for the submission video/deck.** |
+| `benchmarks/README.md` | Benchmark-runner-specific options and historical notes. |
+| `direct-tests/README.md` | Notes on direct-test assets. |
+| `misc/README.md` | Course-provided notes on the Java server. |
 
-Folder-specific READMEs are intentionally kept in `benchmarks/`, `misc/`, and
-`direct-tests/`. Solver documentation is centralized in this root README,
-`ARCHITECTURE.md`, and the project notes under `other_misc/`.
+---
 
-## Build
+## Course context
 
-From the repository root:
-
-```bash
-cmake -S searchclient_cpp -B searchclient_cpp/build-darwin -DCMAKE_BUILD_TYPE=Release
-cmake --build searchclient_cpp/build-darwin --target searchclient_cpp mapf_experiments -j2
-```
-
-The active executable is normally:
-
-```text
-searchclient_cpp/build-darwin/searchclient_cpp/searchclient_cpp
-```
-
-Use `misc/server.jar` for validation. The C++ server sources currently contain
-pre-existing conflict markers and are not the current validation path.
-
-## Run one level
-
-Example with the current default solver path:
-
-```bash
-java -jar misc/server.jar \
-  -l levels/MAExample.lvl \
-  -c "./searchclient_cpp/build-darwin/searchclient_cpp/searchclient_cpp -prioritized" \
-  -t 180
-```
-
-The client writes the expected server handshake, computes a plan, then emits one
-joint action per timestep. Actions for multiple agents are separated with `|`.
-
-## Supported strategy flags
-
-The active `main.cpp` supports these strategy flags:
-
-| Flag | Meaning |
-|---|---|
-| no flag | Try prioritized planning first, then serial fallback, then bounded weighted A*(5), then smart weighted A*. |
-| `-prioritized`, `-pp` | Prioritized planner path. If prioritized and serial fallback fail, a bounded weighted A*(5) repair is attempted. |
-| `-prioritized-fallback`, `-pp-fallback` | Try prioritized planning and serial fallback, then fall back to the selected best-first frontier if those stages fail. |
-| `-bfs` | Breadth-first graph search. |
-| `-dfs` | Depth-first graph search. |
-| `-astar` | A* with the base heuristic. |
-| `-wastar [weight]` | Weighted A* with the base heuristic. Default weight is 5. |
-| `-greedy` | Greedy best-first search with the base heuristic. |
-| `-smart`, `-smart-greedy` | Greedy best-first search with the smart heuristic. |
-| `-smart-wastar [weight]` | Weighted A* with the smart heuristic. Default weight is 3. |
-| `-greedy-goalcount` | Greedy best-first search using unsatisfied-goal count. |
-| `-astar-goalcount` | A* using unsatisfied-goal count. |
-
-Do not use stale MAPF flags such as `-mapf`, `-ecbs`, `-alns`, or `-full` as
-current solver entry points. The MAPF sources compile as an isolated experiment
-target, but those flags are not part of the active `main.cpp` control flow.
-
-## Current prioritized solver flow
-
-The active `-prioritized` / `-pp` path is:
-
-1. Parse the level.
-2. Run a basic goal-feasibility gate.
-3. Try prioritized planning with reservation tables.
-4. For each complete prioritized candidate, validate it with local server-style
-   replay before emitting it.
-5. If replay fails, retry with committed-world box state and/or relaxed
-   reservations.
-6. If prioritized planning fails, try serial task fallback.
-7. If `AIMAS_ENABLE_CBS_REPLAN=1`, try the experimental fixed-assignment CBS
-   fallback.
-8. If CBS is disabled or fails, try bounded weighted A*(5), using a larger bounded
-   repair budget for small joint instances.
-9. If `AIMAS_ENABLE_WINDOWED_REPLAN=1`, try the experimental windowed
-   full-joint fallback.
-10. If no valid plan is found, exit without printing an invalid plan.
-
-No-flag mode uses the same initial stages, but can continue to final smart
-weighted A* after bounded repair fails. `-prioritized-fallback` / `-pp-fallback`
-uses prioritized planning and serial fallback, then skips bounded repair and
-falls back to the selected best-first frontier.
-
-Important current implementation features:
-
-1. `AIMAS_PROFILE=1` enables profile events on stderr.
-2. BFS distance grids are cached and reused.
-3. `CommittedWorld` gives replay-invalid prioritized candidates a stricter world
-   state retry path.
-4. `ReservationPolicy::Relaxed` is a fallback retry, not the default.
-5. `basic_goal_feasibility` fails fast on simple impossible metadata cases.
-6. Graph-search fallback has time, expansion, and branch-factor guards.
-7. Medium-instance serial fallback is default-on for levels with many boxes but
-   few active box goals; set `AIMAS_ENABLE_MEDIUM_SERIAL=0` to disable it.
-8. `AIMAS_LNS_REPAIR=1` adds an experimental last-ditch repair pass after
-   normal prioritized attempts fail; keep it opt-in unless a full benchmark
-   proves it is a strict default improvement.
-9. `AIMAS_ENABLE_WINDOWED_REPLAN=1` adds an experimental windowed full-joint
-   fallback. Use `AIMAS_WINDOWED_CLASSIC_BUDGET_S` in experiments to reserve
-   time for it on levels where classic prioritized planning would otherwise
-   consume the full server timeout.
-10. `AIMAS_ENABLE_CBS_REPLAN=1` adds an experimental fixed-assignment CBS
-   fallback. Use `AIMAS_CBS_CLASSIC_BUDGET_S` to reserve time for it, and tune
-   `AIMAS_CBS_BUDGET_S`, `AIMAS_CBS_LOW_LEVEL_BUDGET_S`,
-   `AIMAS_CBS_MAX_NODES`, `AIMAS_CBS_VARIANTS`, `AIMAS_CBS_MAX_AGENTS`, and
-   `AIMAS_CBS_MAX_BOXES` for experiments.
-
-## Benchmarking
-
-Fast smoke benchmark:
-
-```bash
-python3 benchmarks/run_all_levels.py \
-  --level-list benchmarks/smoke-levels.txt \
-  --algorithm=-prioritized \
-  --timeout 90 \
-  --output-name smoke-darwin \
-  --normalize \
-  --profile
-```
-
-Regression check against solved levels present in the CSV:
-
-```bash
-python3 benchmarks/check_solved_regressions.py benchmarks/results/smoke-darwin.csv
-```
-
-Full grouped benchmark:
-
-```bash
-python3 benchmarks/run_all_levels.py \
-  --level-root levels \
-  --level-root new_comp_levels \
-  --level-root complevels \
-  --algorithm=-prioritized \
-  --timeout 180 \
-  --output-name solved-all-current \
-  --normalize
-```
-
-Strict full regression check:
-
-```bash
-python3 benchmarks/check_solved_regressions.py \
-  benchmarks/results/solved-all-current.csv \
-  --require-all
-```
-
-Failure triage:
-
-```bash
-python3 benchmarks/triage_logs.py benchmarks/results/solved-all-current-logs
-```
-
-Benchmark outputs are written under:
-
-```text
-benchmarks/results/
-```
-
-## Regression policy
-
-Future solver changes should not lose levels listed in:
-
-```text
-searchclient_cpp/solved_levels.md
-```
-
-Minimum validation for a solver change:
-
-1. Build `searchclient_cpp` and `mapf_experiments`.
-2. Run the affected target levels.
-3. Run the smoke benchmark.
-4. Run `benchmarks/check_solved_regressions.py` on the smoke CSV.
-
-For planner-control-flow changes, also run the full `complevels` benchmark. If
-the solved set changes after a full grouped benchmark, regenerate
-`searchclient_cpp/solved_levels.md` from the benchmark CSV.
-
-## More documentation
-
-| Document | Contents |
-|---|---|
-| `ARCHITECTURE.md` | Detailed active solver architecture and algorithms. |
-| `other_misc/IMPLEMENTATION_CHANGES.md` | What changed from the previous starting point. |
-| `other_misc/AGENT_HANDOFF.md` | Operational handoff for the next improvement session. |
-| `benchmarks/README.md` | Benchmark-specific commands and historical Java/C++ comparison notes. |
+- Course: **DTU 02285 — Artificial Intelligence and Multi-Agent Systems.**
+- Domain spec & API: `misc/prog_proj_assignment.pdf`, `misc/README.md`.
+- All client-server protocol details and validation are owned by
+  `misc/server.jar` (provided with the course); we don't ship or
+  modify a custom server.
+- Algorithm references: PDFs in `research_papers/` — Okumura et al.
+  2019 (PIBT), Silver 2005 (Cooperative A\*), Sharon et al. 2015
+  (CBS), Stern 2019 (MAPF survey), Cohen et al. 2018
+  (Anytime Bounded-Suboptimal).
