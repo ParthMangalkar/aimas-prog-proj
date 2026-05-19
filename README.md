@@ -4,8 +4,8 @@ C++17 search client for the DTU 02285 **AIMAS Hospital
 (Multi-Agent Path Finding with Boxes)** domain, together with the
 Java validation server and the benchmark tooling used to validate it.
 
-> **Status (r19):** **73 / 116** levels solved — 28 / 47 on
-> `complevels` and 45 / 69 on `complevels_2026`. +11 over the
+> **Status (r23):** **74 / 116** levels solved — 29 / 47 on
+> `complevels` and 45 / 69 on `complevels_2026`. +12 over the
 > previous in-house single-file C++ solver (62 / 116), in ~25 %
 > less code.
 
@@ -104,9 +104,9 @@ python3 benchmarks/run_all_levels.py \
 |---------------------------------------------|-----------:|----------------:|-------------|
 | Legacy single-file C++ baseline             |          – |               – | 56 / 116    |
 | Legacy single-file C++ (enhanced)           |    27 / 47 |        35 / 69  | 62 / 116    |
-| **`searchclient_cpp_v2` (r19, current)**    |  **28/47** |       **45/69** | **73/116**  |
+| **`searchclient_cpp_v2` (r23, current)**    |  **29/47** |       **45/69** | **74/116**  |
 
-Per-round progression (v2 baseline r4 → current r19) and per-level
+Per-round progression (v2 baseline r4 → current r23) and per-level
 results live in `searchclient_cpp_v2/README.md` and `solved_levels.md`
 respectively. Per-level logs and CSVs are under
 `benchmarks/results/v2-bench-*`.

@@ -6,7 +6,7 @@ project).
 
 Everything in this file is sourced from `ARCHITECTURE.md`, the v2
 README, `solved_levels.md`, and the benchmark CSVs in
-`benchmarks/results/`. Numbers and claims are the result of the r19
+`benchmarks/results/`. Numbers and claims are the result of the r23
 benchmark run.
 
 ---
@@ -14,12 +14,13 @@ benchmark run.
 ## TL;DR — The one-paragraph elevator pitch
 
 > *We replaced a 5 000-line single-file C++ solver (62 / 116 solved)
-> with a modular C++17 rewrite (~3 800 LOC across 14 files) that
-> solves **73 / 116** — a clean architecture that lets us layer PIBT,
-> cooperative A\*, and DP-optimal task assignment as independent
-> components instead of feature-flagged grafts. Every commit is
-> transactional, the pipeline runs without a single environment flag,
-> and unit tests run identically in Debug and Release.*
+> with a modular C++17 rewrite (~4 100 LOC across 14 files) that
+> solves **74 / 116** — a clean architecture that lets us layer PIBT,
+> cooperative A\*, DP-optimal task assignment, and a bounded full
+> joint A\* fallback as independent components instead of
+> feature-flagged grafts. Every commit is transactional, the pipeline
+> runs without a single environment flag, and unit tests run
+> identically in Debug and Release.*
 
 ---
 
@@ -27,16 +28,17 @@ benchmark run.
 
 | Metric | Value | Note |
 |---|---|---|
-| Solved total | **73 / 116** (63 %) | r19 benchmark |
-| Solved `complevels` | 28 / 47 | original set |
+| Solved total | **74 / 116** (64 %) | r23 benchmark |
+| Solved `complevels` | 29 / 47 | original set |
 | Solved `complevels_2026` | 45 / 69 | this year's set |
-| Improvement over single-file C++ | **+11 levels** | from 62 → 73 |
-| New levels solved that the legacy didn't | **16** | (see list below) |
-| Code size | ~3 800 LOC across 14 files | vs ~5 000 LOC in one file |
+| Improvement over single-file C++ | **+12 levels** | from 62 → 74 |
+| New levels solved that the legacy didn't | **17** | (see list below) |
+| Code size | ~4 100 LOC across 14 files | vs ~5 000 LOC in one file |
 | Modules | 6 headers + 6 sources + tests | clean acyclic dependency graph |
-| Environment flags | **0** | legacy had 15+ |
+| Environment flags | **0** | legacy had 15+ (one verbose-debug env var) |
 | Per-variant wall-clock budget | 12 s | total benchmark timeout 30 s |
-| Max task-variant orderings tried | 25 | DP + greedy combinations |
+| Overall solver soft deadline | 27 s | bounds the r23 post-variant fallback loop |
+| Max task-variant orderings tried | 25 primary + ≤13 extras | DP + greedy + min-max + shuffles |
 
 ---
 
@@ -49,8 +51,8 @@ benchmark run.
 - Course: DTU 02285 AI & Multi-Agent Systems
 - Names, date
 
-**Speaker note:** Open by stating the headline number — "73 of 116
-levels solved, an 11-level improvement over the previous in-house
+**Speaker note:** Open by stating the headline number — "74 of 116
+levels solved, a 12-level improvement over the previous in-house
 solver." Don't bury the lead.
 
 ---
@@ -91,7 +93,7 @@ Rewrite from scratch:
 1. **Modular** — 14 files, strictly acyclic dependencies.
 2. **Flagless** — every feature always on.
 3. **Transactional** — every layer rolls back atomically on failure.
-4. **Faster** — beat 62 / 116. (We're at 73.)
+4. **Faster** — beat 62 / 116. (We're at 74.)
 
 **Speaker note:** Frame this as the central engineering decision —
 "we chose to rewrite rather than patch, because the architecture
@@ -113,12 +115,20 @@ stdin → parse_level → Solver::solve
                        │     ├── run_queue (delivery + relocation)
                        │     ├── redelivery scan
                        │     └── complete_agent_goals
-                       │           (PIBT → cooperative A* → serial)
+                       │           (PIBT → cooperative A* → serial
+                       │            → agent-only joint A* ≤4 agents)
+                       ├── (r23) post-variant fallbacks:
+                       │     ├── extras (min-max-DP + 8 shuffles)
+                       │     └── solve_joint_full
+                       │           (full joint A*: agents + boxes,
+                       │            ≤4 agents, ≤10 boxes, ≤200 cells)
                        └── return first plan → stdout
 ```
 
 **Speaker note:** Walk left-to-right. Emphasize the "first plan
 wins" pattern — we don't need every variant to succeed, just one.
+The r23 fallbacks at the bottom only fire when every primary
+variant has already given up.
 
 ---
 
@@ -126,14 +136,15 @@ wins" pattern — we don't need every variant to succeed, just one.
 
 | Module | Job | LOC |
 |---|---|---:|
-| `core` | Action table + State (apply_joint, conflict, applicability) | 462 |
+| `core` | Action table + State (apply_joint, conflict, applicability) | 333 |
 | `parser` | Read level file | 162 |
 | `topology` | Walls-only BFS, components | 256 |
 | `single_box` | A\* over (agent, box) | 308 |
 | `pibt` | Joint planner for the final phase | 347 |
-| `solver` | Orchestrates everything | 2 044 |
+| `compact` | Greedy + sliding-window plan compaction | 222 |
+| `solver` | Orchestrates everything (incl. r23 fallbacks + full joint A\*) | 2 680 |
 | `main` | Server protocol I/O | 60 |
-| `tests` | Self-contained CHECK macro | 196 |
+| `tests` | Self-contained CHECK macro | 280 |
 
 **Speaker note:** Lower-level modules (top of the list) never
 reference higher-level ones. That's what makes adding a new planner
@@ -192,13 +203,53 @@ numeric goal cells. Three planners, tried in order:
 | **PIBT** | Priority Inheritance with Backtracking | Okumura 2019 |
 | **Cooperative A\*** | Time-extended single-agent A\* with reservations | Silver 2005 |
 | **Serial BFS** | Per-agent BFS, others as walls | textbook |
+| **Joint A\* (agent-only, ≤4 agents)** | Joint A\* on agent positions with boxes as walls | classical MAPF |
 
 Between rounds, `evacuate_final_goal_agent_blockers` evicts any
 agent sitting on another agent's goal.
 
 **Speaker note:** Cooperative A\* is what pushed us from 72 to 73
-(unlocked TriWards). PIBT remains the primary because it produces
-much shorter joint-action plans when it works.
+(unlocked TriWards). The agent-only joint A\* layer (r23) is a
+narrow safety-net for tight rotation puzzles. PIBT remains the
+primary because it produces much shorter joint-action plans when
+it works.
+
+---
+
+### Slide 9.5 — Algorithm 4 (r23): Post-variant fallbacks + full joint A\*
+
+If **every** primary task variant fails, two more layers fire under
+a 27-second overall budget:
+
+1. **Extra variants** (≤13 of them)
+   - **Min-max DP** task assignment (5 sort modes) — minimizes the
+     *worst* walls-only box→goal distance instead of the sum.
+   - **8 deterministic letter-group shuffles** of the DP base
+     (RNG seed `0xC0FFEE` for reproducibility).
+   - Signature-deduped against primary variants.
+
+2. **Bounded full joint A\*** (`solve_joint_full`)
+   - Joint A\* over the *entire* state: all agent positions + all
+     box positions.
+   - **Eligibility**: ≤4 agents, ≤10 boxes, ≤200 reachable cells —
+     keeps the state space tractable.
+   - **Heuristic**: admissible makespan lower bound = `max(over each
+     letter goal: min same-letter box walls-distance, over each agent
+     goal: walls-distance from agent)`.
+   - **Caps**: 80 000 node expansions, 5 s wall-clock.
+   - Uses `State::applicable / conflicting / apply_joint` so the
+     resulting plan is server-valid by construction.
+
+**Impact (r23 vs r20):** +1 level (`TeamAgent` — a 3-agent rotation
+puzzle no serial / PIBT / relocation strategy could crack), 0
+regressions. The new layers consume budget only on levels that the
+existing pipeline already failed on, so currently-solved levels
+never reach this code.
+
+**Speaker note:** This is the second engineering moral after
+"transactional layers": *strictly-additive fallbacks*. We can keep
+adding last-resort planners forever as long as each only fires
+after every previous one has cleanly rolled back.
 
 ---
 
@@ -255,29 +306,31 @@ level instead of the planner level.
 |---|---:|---:|---|
 | Legacy baseline | – | – | 56 / 116 |
 | Legacy enhanced | 27 / 47 | 35 / 69 | 62 / 116 |
-| **v2 r19 (current)** | **28 / 47** | **45 / 69** | **73 / 116** |
+| **v2 r23 (current)** | **29 / 47** | **45 / 69** | **74 / 116** |
 
-→ **+11 levels, –25 % code size, 0 environment flags.**
+→ **+12 levels, –20 % code size, 0 environment flags.**
 
-**Speaker note:** Optionally show the per-round graph (r4 → r19) so
+**Speaker note:** Optionally show the per-round graph (r4 → r23) so
 the audience sees solve-count climbing as each module landed.
 
 ---
 
 ### Slide 13 — Incremental progress (graph)
 
-| Round | Δ feature                            | Total |
-|------:|--------------------------------------|------:|
-| r4    | baseline (single-box A\* only)        | 37    |
-| r5    | + alt-agent retry + defer            | 39    |
-| r6    | + relocation + scatter               | 47    |
-| r7    | + PIBT (final phase)                 | 52    |
-| r8    | + multi-variant orchestration        | 55    |
-| r9    | + mover-agent eviction + box re-find | 60    |
-| r10   | + aggressive reloc + redelivery      | 63    |
-| r15   | + corridor evac + final-goal evac    | 72    |
-| r17   | + cooperative A\* CAG                | 73    |
-| r19   | + DP-optimal task assignment         | 73    |
+| Round | Δ feature                                  | Total |
+|------:|--------------------------------------------|------:|
+| r4    | baseline (single-box A\* only)              | 37    |
+| r5    | + alt-agent retry + defer                  | 39    |
+| r6    | + relocation + scatter                     | 47    |
+| r7    | + PIBT (final phase)                       | 52    |
+| r8    | + multi-variant orchestration              | 55    |
+| r9    | + mover-agent eviction + box re-find       | 60    |
+| r10   | + aggressive reloc + redelivery            | 63    |
+| r15   | + corridor evac + final-goal evac          | 72    |
+| r17   | + cooperative A\* CAG                       | 73    |
+| r19   | + DP-optimal task assignment               | 73    |
+| r20   | + post-processing plan compaction          | 73    |
+| r23   | + post-variant fallbacks + full joint A\*   | **74** |
 
 **Speaker note:** Each round is one cleanly reviewable code change.
 Plot this as a line graph in PowerPoint.
@@ -340,11 +393,12 @@ for the live demo. Have screen recordings of two more as backups.
 
 ### Slide 17 — Conclusion
 
-- **73 / 116 solved** with a modular, flagless, transactional
+- **74 / 116 solved** with a modular, flagless, transactional
   architecture.
-- Three coordinated planners (single-box A\*, PIBT, cooperative A\*)
-  + DP-optimal task assignment + recursive relocation.
-- Clear roadmap for the remaining 43.
+- Four coordinated planners (single-box A\*, PIBT, cooperative A\*,
+  agent-only joint A\*) + DP-optimal task assignment + recursive
+  relocation + r23 bounded full joint A\* fallback.
+- Clear roadmap for the remaining 42.
 - Questions?
 
 ---
@@ -422,8 +476,8 @@ that's where component decomposition would help.
 
 - **Length:** Aim for 10–15 minutes. Don't pad — examiners value
   density.
-- **Open with the result.** First 30 seconds: "We solve 73 of 116
-  levels, an 11-level improvement over the previous solver." Then
+- **Open with the result.** First 30 seconds: "We solve 74 of 116
+  levels, a 12-level improvement over the previous solver." Then
   go into the how.
 - **Show the code briefly.** Open `solver.cpp`, scroll to the
   `solve_once` `run_queue` lambda (line ~1763), highlight the
@@ -449,7 +503,7 @@ that's where component decomposition would help.
 | Pipeline diagram | `ARCHITECTURE.md` §1 |
 | Solve-count progression table | `searchclient_cpp_v2/README.md` "Benchmarks" |
 | Per-level solve table | `solved_levels.md` |
-| Per-level raw data (for graphs) | `benchmarks/results/v2-bench-complevels-r19.csv`<br>`benchmarks/results/v2-bench-complevels-2026-r19.csv` |
+| Per-level raw data (for graphs) | `benchmarks/results/v2-bench-complevels-r23.csv`<br>`benchmarks/results/v2-bench-complevels-2026-r23.csv` |
 | Algorithm references (PDFs) | `research_papers/AStar_Plus/`, `research_papers/LMAPF/` |
 
 ---

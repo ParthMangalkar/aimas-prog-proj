@@ -4,10 +4,10 @@ This document describes the current architecture of the production solver
 in this repository: `searchclient_cpp_v2`. It is the only active C++
 client; the previous monolithic implementations have been removed.
 
-> **Status (r19):** 73 / 116 levels solved (28 / 47 on `complevels`,
+> **Status (r23):** 74 / 116 levels solved (29 / 47 on `complevels`,
 > 45 / 69 on `complevels_2026`). Beats the legacy single-file solver
-> (62 / 116) by **+11** while shrinking from ~5 000 LOC in one file to
-> ~3 800 LOC across 14 focused modules with unit tests.
+> (62 / 116) by **+12** while shrinking from ~5 000 LOC in one file to
+> ~4 100 LOC across 14 focused modules with unit tests.
 
 ---
 
@@ -42,7 +42,15 @@ stdin (level file, DTU/AIMAS server format)
 │         ▼         │
 │ ┌───────────────┐ │
 │ │ complete_     │ │   PIBT → cooperative A* → serial
-│ │  agent_goals  │ │   + final-goal agent eviction passes
+│ │  agent_goals  │ │   → agent-only joint A* (≤4 agents)
+│ │               │ │   + final-goal agent eviction passes
+│ └───────┬───────┘ │
+│         ▼         │
+│ ┌───────────────┐ │
+│ │ extras +      │ │   r23 fallbacks (only if every primary variant failed):
+│ │ full joint A* │ │   • min-max-DP × 5 sort modes + 8 letter-group shuffles
+│ │               │ │   • bounded joint A* over agents+boxes (≤4 agents,
+│ │               │ │     ≤10 boxes, ≤200 cells, 80k node / 5s caps)
 │ └───────────────┘ │
 └─────────┬─────────┘
           │ std::vector<std::vector<int>> plan_
@@ -53,8 +61,9 @@ stdin (level file, DTU/AIMAS server format)
 ```
 
 A single per-variant wall-clock deadline (`kVariantBudgetSeconds = 12s`)
-bounds how long any one task ordering can run; the overall benchmark
-timeout is 30 s.
+bounds how long any one task ordering can run; an overall solver-wide
+soft deadline (`kOverallBudgetSeconds = 27s`) caps how long the
+post-variant fallback loop can run; the overall benchmark timeout is 30 s.
 
 ---
 
@@ -78,8 +87,9 @@ searchclient_cpp_v2/
 │   ├── single_box.cpp        # A* over (agent, box) pairs
 │   ├── pibt.cpp              # PIBT joint coordinator
 │   ├── compact.cpp           # greedy + sliding-window plan compaction
-│   ├── solver.cpp            # 1 896 LOC — task variants, delivery,
-│   │                         #   relocation, evacuation, final phase
+│   ├── solver.cpp            # ~2 680 LOC — task variants, delivery,
+│   │                         #   relocation, evacuation, final phase,
+│   │                         #   r23 fallbacks (extras + full joint A*)
 │   └── main.cpp              # server protocol I/O
 └── tests/
     └── test_main.cpp         # action_table, parse, applicable+conflict,
@@ -89,13 +99,13 @@ searchclient_cpp_v2/
 
 | Module | LOC | Depends on |
 |---|---:|---|
-| `core` | 462 | (stdlib only) |
+| `core` | 333 | (stdlib only) |
 | `parser` | 162 | `core` |
 | `topology` | 256 | `core` |
 | `single_box` | 308 | `core`, `topology` |
 | `pibt` | 347 | `core`, `topology` |
-| `compact` | 210 | `core` |
-| `solver` | 2 044 | all of the above |
+| `compact` | 222 | `core` |
+| `solver` | 2 680 | all of the above |
 | `main` | 60 | `core`, `parser`, `solver` |
 | `tests` | 280 | all |
 
@@ -180,13 +190,15 @@ Different layers emit very different "shapes" of joint action:
 | `complete_agent_goals_pibt` (PIBT)       | Real joint move; many agents per step       | ≈ longest agent path                     |
 | `complete_agent_goals_reserved` (CA*)    | Real joint move from time-extended replay   | ≈ max plan_time across agents            |
 | `complete_agent_goals_serial`            | One agent moves, others `NoOp`              | Sum of per-agent BFS path lengths        |
+| `complete_agent_goals_joint`             | Real joint move (Move/NoOp, ≤4 agents)      | ≈ longest agent path                     |
+| `solve_joint_full` (r23 fallback)        | Real joint move (Move/Push/Pull/NoOp)       | True joint makespan from A\* search      |
 | `evacuate_corridor_agents`               | One evacuee moves, others `NoOp`            | Adds path length of each evicted agent   |
 | `relocate_blocker`, `scatter_agent_to`   | One mover, others `NoOp`                    | One step per nudge                       |
 
 `main.cpp` emits each row to stdout and reads the server's per-row ack
 once. The server's count (= `plan_.size()` when solved) is what gets
 recorded in the benchmark CSVs as `server_len`. **Note**: before
-`solve()` returns, `compact_plan` (§5.7) re-packs the plan, so
+`solve()` returns, `compact_plan` (§5.8) re-packs the plan, so
 `server_len` is the *post-compaction* length, not the length each
 layer accumulated during search.
 
@@ -322,13 +334,61 @@ them:
    Per-agent BFS treating every other agent as a static wall. Now
    **incremental** (commits per agent, multi-round) so partial
    progress is preserved when only some agents need to move.
+4. **Agent-only joint A\*** (`complete_agent_goals_joint`)
+   Last attempt before rolling back the whole agent phase: a bounded
+   joint A\* over agent positions only (≤4 agents), treating walls
+   and currently-placed boxes as obstacles. Branching is 5^N (Move ×
+   4 + NoOp per agent); a 200k-node cap and per-call deadline keep
+   it bounded. Unlocks tight rotation puzzles where PIBT, CA\* and
+   serial BFS all deadlock around each other.
 
 Between rounds, `evacuate_final_goal_agent_blockers` evicts any agent
 sitting on another agent's final goal cell or path, and
 `clear_paths_to_agent_goals` relocates boxes that would prevent serial
 BFS from completing.
 
-### 5.7 Post-processing plan compaction (`compact.{hpp,cpp}`)
+### 5.7 Post-variant fallbacks and bounded full joint A\* (r23)
+
+When every primary task variant fails, `Solver::solve` doesn't give up
+immediately. While there's still budget under the 27-second overall
+deadline, two additional layers fire:
+
+1. **Extra variants** (`build_extra_variants`)
+   - **Min-max DP assignment** (`build_tasks_matched_dp_minmax`):
+     same bitmask DP as the primary, but the cost combinator is
+     `max(dp[mask], d)` instead of `dp[mask] + d`. Often unlocks
+     instances where the sum-optimal assignment traps one box
+     behind another.
+   - Five sort modes of the min-max DP base (default / agent-locality
+     / goal-row / goal-col / reverse) are emitted as separate variants.
+   - **Eight deterministic letter-group shuffles** of the DP min-sum
+     base (RNG seeded with `0xC0FFEE` for reproducibility, per-letter
+     grouping preserved). These re-order which agent picks first
+     within each letter, sometimes side-stepping a delivery deadlock.
+   - All extras are signature-deduped against the primary variants so
+     identical orderings aren't re-tried.
+
+2. **Full joint A\*** (`solve_joint_full`)
+   Last-resort joint A\* over the **full state** (all agent positions
+   *and* all box positions). Eligibility is tight to keep state-space
+   tractable: **N ≤ 3 → ≤ 10 boxes, ≤ 200 cells; N = 4 → ≤ 8 boxes,
+   ≤ 260 cells**. Heuristic is an admissible makespan lower bound —
+   for each letter-goal cell take the min walls-only distance to any
+   same-letter box; for each agent-goal cell take the walls-only
+   distance from that agent; return the max. Reuses `State::applicable
+   / conflicting / apply_joint` for successor generation, so any plan
+   returned is server-valid by construction. Caps: **80 000 node
+   expansions, 5-second wall-clock budget**. On success, the joint-
+   action sequence is replayed from `initial_state_` and verified
+   against `State::goal_state` before commit.
+
+Real-world impact (r23 vs. r20): **+1 level (`TeamAgent`)**, 0
+regressions, ~38 s additional wall-time across both suites for
+levels that hit the joint search and exhaust the cap. The fallbacks
+are strictly additive — currently-solved levels never reach this
+code path (they all finish via the primary pipeline in <10 s).
+
+### 5.8 Post-processing plan compaction (`compact.{hpp,cpp}`)
 
 The serial delivery layers (single-box A\*, scatter, relocation,
 corridor evacuation, serial CAG) all emit one joint action per
@@ -368,8 +428,8 @@ which checks:
 After building, both candidates are **replayed** from `initial_state_`
 through `State::apply_joint`; if the resulting state doesn't
 `StateEq`-match the reference, that candidate is discarded and the
-*original* plan is returned. Real-world impact across the 73 solved
-levels: 71/73 plans shrink, 5 % fewer joint actions on average, up to
+*original* plan is returned. Real-world impact across the 74 solved
+levels: ~71 plans shrink, 5 % fewer joint actions on average, up to
 65 % on independent-agent levels (Agentix, TourDeDTU). Solve count is
 unchanged by construction — compaction is a safe rewrite of an
 already-valid plan, never a search step.
@@ -437,6 +497,7 @@ GoogleTest, no Catch2) so they run identically in Debug and Release.
 | **PIBT** | Okumura et al. (2019) "Priority Inheritance with Backtracking for Iterative Multi-agent Path Finding" |
 | **Cooperative A\*** | Silver (2005) "Cooperative Pathfinding" (with the standard reverse-edge swap check) |
 | **DP-optimal letter matching** | Bitmask DP over assignment; folklore |
+| **Bounded full joint A\* (r23)** | Classical multi-agent A\* with admissible makespan heuristic; e.g. Standley (2010) "Finding Optimal Solutions to Cooperative Pathfinding Problems" for the joint-state framing |
 | **Plan compaction (compact.cpp)** | Custom; conceptual sibling of post-hoc MAPF plan smoothing |
 | References in `research_papers/` | A\*+ (`AStar_Plus/`), LMAPF (`LMAPF/`) |
 
@@ -446,15 +507,19 @@ GoogleTest, no Catch2) so they run identically in Debug and Release.
 
 These were considered and rejected (or postponed) for v2:
 
-- **CBS / ECBS** as the primary planner. PIBT + cooperative A\* gives
-  most of the benefit at a fraction of the implementation cost; CBS
-  remains an option for the dense-rotation puzzles
-  (Planarchy / TriSplit / Apdo class) we still can't solve.
+- **CBS / ECBS** as the primary planner. PIBT + cooperative A\* +
+  bounded full joint A\* (r23 fallback) give most of the benefit at a
+  fraction of the implementation cost; CBS remains an option for the
+  dense-rotation puzzles (Planarchy / TriSplit / Apdo class) we still
+  can't solve.
 - **Environment flags** for behavioural toggles. v2 is one path: every
   feature is either always-on or it doesn't exist. The legacy solver's
-  15+ env flags made debugging and reproducibility painful.
+  15+ env flags made debugging and reproducibility painful. (One
+  exception: `V2_VERBOSE=1` re-enables compaction-pass stderr logging,
+  off by default.)
 - **GoogleTest / Catch2**. The custom `CHECK(...)` macro is 30 lines
   and zero dependencies; tests stay portable.
-- **Component decomposition**, **joint-search A\* for ≤5 agents**, and
-  **PIBT-during-delivery** are designed for but not yet implemented;
-  see the roadmap in `searchclient_cpp_v2/README.md`.
+- **Component decomposition** and **PIBT-during-delivery** are designed
+  for but not yet implemented; see the roadmap in
+  `searchclient_cpp_v2/README.md`. **Joint A\* for ≤4 agents** is now
+  implemented (§5.6 and §5.7).

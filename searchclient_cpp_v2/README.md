@@ -4,8 +4,8 @@ A modular C++17 search client for the **AIMAS Hospital (Multi-Agent
 Path Finding with Boxes)** domain used in DTU's Artificial Intelligence
 & Multi-Agent Systems course.
 
-Current solve rate (r19): **73 / 116** on the combined level set
-(28 / 47 `complevels` + 45 / 69 `complevels_2026`).
+Current solve rate (r23): **74 / 116** on the combined level set
+(29 / 47 `complevels` + 45 / 69 `complevels_2026`).
 
 ---
 
@@ -41,6 +41,11 @@ invariants, planner internals, joint-action accounting).
 - **DP-optimal task assignment** (bitmask DP) layered alongside greedy
   matching so neither one dominates — they run as separate variants
   and the first to fully succeed wins.
+- **Post-variant fallback layers** (r23): when every primary variant
+  fails, the solver tries min-max-distance DP assignment, deterministic
+  letter-group shuffles, and — for small problems (≤4 agents, ≤10
+  boxes, ≤200 cells) — a bounded **full joint A\*** over agents and
+  boxes with an admissible makespan heuristic.
 - **Recursive blocker relocation** with parking-cell scoring and an
   anti-thrash blacklist.
 - **Corridor evacuation** (radius-1 buffer around both the box path
@@ -205,6 +210,15 @@ level log files.
                 │      state_ = initial_state_; plan_.clear()    │
                 │      if solve_once(variant): return plan_      │
                 │                                                │
+                │  # Post-variant fallbacks (r23):               │
+                │  for v in build_extra_variants():              │
+                │    • min-max-DP × 5 sort modes                 │
+                │    • 8 deterministic letter-group shuffles     │
+                │    if solve_once(v): return plan_              │
+                │                                                │
+                │  # Last-resort full joint A* (small problems): │
+                │  if solve_joint_full(): return plan_           │
+                │                                                │
                 │  plan_ = compact_plan(plan_, initial_state_)   │
                 └────────────────────────────────────────────────┘
                                   │
@@ -236,7 +250,8 @@ level log files.
 | Task assignment | DP-optimal (bitmask) | Greedy matched per letter |
 | Per-task delivery | Single-box A\* | scatter → corridor-evac → defer → relocation |
 | Blocker relocation | Single-box A\* (recursive) | Larger parking-cell pool, allow-on-goal pass |
-| Final agent phase | PIBT | Cooperative A\* → serial BFS |
+| Final agent phase | PIBT | Cooperative A\* → serial BFS → agent-only joint A\* (≤4 agents) |
+| Last-resort fallback (r23) | Min-max-DP + letter-group shuffle extras | Bounded **full joint A\*** over agents + boxes (≤4 agents / ≤10 boxes / ≤200 cells) |
 | Post-processing | Plan compaction (greedy + sliding window) | Original plan if either verification fails |
 
 Joint-action plans are built incrementally by `Solver::append_joint`.
@@ -257,7 +272,7 @@ breakdown.
 |---------------------------------------------|-----------:|----------------:|-------------|
 | Legacy single-file C++ baseline             |          – |               – | 56 / 116    |
 | Legacy single-file C++ (enhanced)           |    27 / 47 |        35 / 69  | 62 / 116    |
-| **`searchclient_cpp_v2` (r19, current)**    |  **28/47** |       **45/69** | **73/116**  |
+| **`searchclient_cpp_v2` (r23, current)**    |  **29/47** |       **45/69** | **74/116**  |
 | └ v2 baseline (single-box A\* only, r4)     |    13 / 47 |        24 / 69  |   37 / 116  |
 | └ + alt-agent retry + defer (r5)            |    14 / 47 |        25 / 69  |   39 / 116  |
 | └ + relocation + scatter (r6)               |    18 / 47 |        29 / 69  |   47 / 116  |
@@ -269,6 +284,7 @@ breakdown.
 | └ + cooperative A\* CAG planner (r17)       |    28 / 47 |        45 / 69  |   73 / 116  |
 | └ + DP-optimal task assignment (r19)        |    28 / 47 |        45 / 69  |   73 / 116  |
 | └ + post-processing plan compaction (r20)   |    28 / 47 |        45 / 69  |   73 / 116  |
+| └ + post-variant fallbacks + full joint A\* (r23) | **29 / 47** |  **45 / 69** | **74 / 116** |
 
 - Per-level CSVs and Markdown tables: `benchmarks/results/v2-bench-*.csv`.
 - Per-level logs: `benchmarks/results/v2-bench-*-logs/`.
