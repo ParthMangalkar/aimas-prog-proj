@@ -10,14 +10,37 @@ linked into the default solver.
 
 ## Current status
 
-The current verified baseline was generated with `searchclient_cpp -prioritized`
-through `misc/server.jar`, using normalized level input and a 180 second timeout.
+The current verified baseline uses `searchclient_cpp -prioritized` through
+`misc/server.jar`, normalized level input, and a 180 second timeout. It combines
+the previous full benchmark with a recheck of every listed solved level and the
+newly parser-fixed `complevels/rooMbA.lvl`.
 
 | Level folder | Solved | Total |
 |---|---:|---:|
 | `levels` | 90 | 104 |
 | `new_comp_levels` | 0 | 6 |
-| `complevels` | 25 | 47 |
+| `complevels` | 26 | 47 |
+
+`AIMAS_LNS_REPAIR=1` enables an experimental last-ditch repair pass. It is not
+default-on, but the tuned version currently solves one additional competition
+level (`complevels/MArtians.lvl`) without regressing the 116-level solved
+regression set, for an opt-in `complevels` count of 27 / 47.
+
+`AIMAS_ENABLE_WINDOWED_REPLAN=1` enables an experimental full-joint
+windowed/RHCR fallback after the normal prioritized pipeline fails. It remains
+default-off: targeted testing on `BigSplit`, `Lily`, `MArtians`, `Minchia`, and
+`ZOOM` produced no additional solves, so the next high-ROI direction is a true
+decomposed MAPF/CBS or neighborhood repair adapter rather than more full-joint
+window tuning.
+
+`AIMAS_ENABLE_CBS_REPLAN=1` enables an experimental fixed-assignment CBS
+fallback. It builds a CBS constraint tree over the existing per-agent box plans,
+branches on body/box vertex conflicts and swap conflicts, and validates any
+candidate with the normal server-style replay. This is now the cleanest
+coordination foundation in the solver, but it is still default-off: targeted
+testing on `BigSplit`, `MArtians`, and `ZOOM` produced no new solves because the
+remaining failures are usually low-level box-delivery infeasibilities before CBS
+can branch.
 
 The solved-level source of truth is:
 
@@ -114,9 +137,13 @@ The active `-prioritized` / `-pp` path is:
 5. If replay fails, retry with committed-world box state and/or relaxed
    reservations.
 6. If prioritized planning fails, try serial task fallback.
-7. If serial fallback fails, try bounded weighted A*(5).
-8. For small joint instances, use a larger bounded repair budget.
-9. If no valid plan is found, exit without printing an invalid plan.
+7. If `AIMAS_ENABLE_CBS_REPLAN=1`, try the experimental fixed-assignment CBS
+   fallback.
+8. If CBS is disabled or fails, try bounded weighted A*(5), using a larger bounded
+   repair budget for small joint instances.
+9. If `AIMAS_ENABLE_WINDOWED_REPLAN=1`, try the experimental windowed
+   full-joint fallback.
+10. If no valid plan is found, exit without printing an invalid plan.
 
 No-flag mode uses the same initial stages, but can continue to final smart
 weighted A* after bounded repair fails. `-prioritized-fallback` / `-pp-fallback`
@@ -132,6 +159,20 @@ Important current implementation features:
 4. `ReservationPolicy::Relaxed` is a fallback retry, not the default.
 5. `basic_goal_feasibility` fails fast on simple impossible metadata cases.
 6. Graph-search fallback has time, expansion, and branch-factor guards.
+7. Medium-instance serial fallback is default-on for levels with many boxes but
+   few active box goals; set `AIMAS_ENABLE_MEDIUM_SERIAL=0` to disable it.
+8. `AIMAS_LNS_REPAIR=1` adds an experimental last-ditch repair pass after
+   normal prioritized attempts fail; keep it opt-in unless a full benchmark
+   proves it is a strict default improvement.
+9. `AIMAS_ENABLE_WINDOWED_REPLAN=1` adds an experimental windowed full-joint
+   fallback. Use `AIMAS_WINDOWED_CLASSIC_BUDGET_S` in experiments to reserve
+   time for it on levels where classic prioritized planning would otherwise
+   consume the full server timeout.
+10. `AIMAS_ENABLE_CBS_REPLAN=1` adds an experimental fixed-assignment CBS
+   fallback. Use `AIMAS_CBS_CLASSIC_BUDGET_S` to reserve time for it, and tune
+   `AIMAS_CBS_BUDGET_S`, `AIMAS_CBS_LOW_LEVEL_BUDGET_S`,
+   `AIMAS_CBS_MAX_NODES`, `AIMAS_CBS_VARIANTS`, `AIMAS_CBS_MAX_AGENTS`, and
+   `AIMAS_CBS_MAX_BOXES` for experiments.
 
 ## Benchmarking
 

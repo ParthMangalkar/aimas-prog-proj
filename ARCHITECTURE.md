@@ -13,7 +13,9 @@ parse level
      -> validate every complete candidate with local server-style replay
      -> retry replay-invalid candidates with committed-world and/or relaxed reservations
   -> if that fails, try serial task fallback
+  -> if AIMAS_ENABLE_CBS_REPLAN=1, try an experimental fixed-assignment CBS fallback
   -> if that fails, try bounded weighted A* fallback in default and prioritized-only modes
+  -> if AIMAS_ENABLE_WINDOWED_REPLAN=1, try an experimental windowed full-joint fallback
   -> if allowed, fall back to smart best-first graph search
   -> emit one joint action per timestep to the server
 ```
@@ -23,8 +25,9 @@ The implementation is "hybrid" because it combines:
 1. Whole-state graph search over complete joint actions.
 2. Greedy task assignment for box goals.
 3. Single-agent Space-Time A* with reservation tables.
-4. Serial single-agent fallback planning with blocker eviction and box relocation.
-5. Smart heuristic best-first fallback search.
+4. An opt-in CBS constraint-tree coordinator over fixed per-agent assignments.
+5. Serial single-agent fallback planning with blocker eviction and box relocation.
+6. Smart heuristic best-first fallback search.
 
 ## Active source layout
 
@@ -53,7 +56,7 @@ The client models the server domain with these core types:
 | `State` | Full world state: agent positions, box grid, parent pointer, joint action, and path cost. Static level data such as colors, walls, and goals are stored as static members. |
 | `StatePtrHasher` / `StatePtrEqual` | Hashing/equality for duplicate detection in graph search. |
 | `Frontier` | Abstract search frontier interface used by BFS, DFS, and best-first search. |
-| `Heuristic` | Base heuristic class that precomputes BFS distance maps from every goal cell. |
+| `Heuristic` | Base heuristic clakss that precomputes BFS distance maps from every goal cell. |
 
 `State` is responsible for:
 
@@ -86,6 +89,79 @@ After each emitted joint action, the client reads one response line from the ser
 ## Profiling and validation guards
 
 `AIMAS_PROFILE=1` enables profiling events on stderr. The implementation uses `ScopedProfile` and `profile_event` around parsing, prioritized planning, serial fallback, bounded weighted A*, graph search, and selected inner planner stages.
+
+### Default-on safety / heuristic features
+
+Three default-on features can be disabled for ablation by setting the matching env var to `0`:
+
+| Env var (default ON) | Feature | Effect when ON |
+|---|---|---|
+| `AIMAS_DEADLOCK_PRUNING` | Static-deadlock pruning (push+pull reverse reachability per box letter) | Prunes pushes/pulls that would move a box into a cell from which it cannot reach any goal of its letter. Sound because Pull is a legal action in this domain. |
+| `AIMAS_GOAL_DAG` | Goal-dependency DAG ordering with chronological backtracking | Adds an ordering variant where each agent's `DeliverBox` subtasks are topologically sorted so that placing one box's goal does not strand another box. Falls back to input order on cycle. |
+| `AIMAS_PUSH_DISTANCE_H` | Tighter admissible heuristic combining passable-BFS with push-distance BFS | For `DeliverBox` heuristic values, takes `max(passable_dist, push_dist)` from the box's current cell to its goal. Push-distance BFS counts box moves where each move requires push or pull agent feasibility. Both grids are admissible, so `max` keeps admissibility. |
+
+All three are validated regression-clean against the full 116-level known-solved set and are safe to ship default-on.
+
+### Experimental opt-in repair
+
+`AIMAS_LNS_REPAIR=1` enables experimental prioritized-side repair attempts as a last-ditch pass after normal prioritized attempts fail. The current implementation is intentionally opt-in only: it can retry same-agent movable-box state search, bounded local joint repair, blocker relocation for final agent goals, future-owner/self relocation slices, and serial-completion splices using the existing serial machinery. The tuned repair is regression-clean on the 116-level solved set and converts `complevels/MArtians.lvl`, raising the opt-in competition count from 26/47 to 27/47, but it is still not default-on because the remaining unsolved cases mostly time out and need stronger coordination/windowed planning.
+
+Additional opt-in tuning knobs include `AIMAS_LNS_STATE_BUDGET_S`, `AIMAS_LNS_LOCAL_AREA`, `AIMAS_LNS_JOINT_BUDGET_S`, `AIMAS_LNS_JOINT_EXPANSIONS`, `AIMAS_LNS_LOCAL_AGENTS`, `AIMAS_LNS_LOCAL_RADIUS`, and `AIMAS_LNS_LOCAL_HORIZON`.
+
+### Experimental windowed fallback
+
+`AIMAS_ENABLE_WINDOWED_REPLAN=1` enables a bounded full-joint windowed fallback
+after the prioritized, serial, and bounded weighted-A* stages fail. It searches
+from the current state for a horizon-limited partial plan, commits a short
+prefix only if the heuristic/goal count improves, and replays every committed
+joint action before accepting it. `AIMAS_WINDOWED_CLASSIC_BUDGET_S` can reserve
+time for this stage on levels where the classic pipeline would otherwise consume
+the whole server timeout. Other knobs are `AIMAS_WINDOWED_HORIZON`,
+`AIMAS_WINDOWED_COMMIT`, `AIMAS_WINDOWED_MAX_WINDOWS`,
+`AIMAS_WINDOWED_BUDGET_S`, `AIMAS_WINDOWED_STEP_BUDGET_S`,
+`AIMAS_WINDOWED_EXPANSIONS`, and `AIMAS_WINDOWED_WEIGHT`.
+
+This is not true WHCA*/RHCR yet because each window still expands full joint
+states rather than planning per agent against a reservation window. Targeted
+testing on `BigSplit`, `Lily`, `MArtians`, `Minchia`, and `ZOOM` produced no
+new solves. The implementation is kept opt-in as a safe experimental tool, but
+the next likely improvement should be a decomposed MAPF/CBS or local
+neighborhood repair adapter.
+
+### Experimental CBS fallback
+
+`AIMAS_ENABLE_CBS_REPLAN=1` enables a bounded fixed-assignment CBS fallback
+after prioritized and serial planning fail. The high-level CBS node stores
+per-agent constraint lists, per-agent low-level plans, a sum-of-costs score, and
+a conflict count. The open list is best-first on fewer conflicts, then lower
+cost, then fewer constraints. Duplicate high-level nodes are rejected with a
+canonical key over the sorted constraints.
+
+The low-level planner is the existing `plan_agent` Space-Time A* over the
+assigned subtasks. For CBS only, starts of boxes assigned to any agent are
+treated as dynamic rather than permanent static blockers, and the CBS conflict
+detector tracks their planned positions from time zero until they move. A
+conflict creates two CBS children: one constraining each involved owner. The
+implemented constraint types are:
+
+| Constraint | Representation | Low-level effect |
+|---|---|---|
+| Vertex | `(agent, row, col, time)` or `[time, horizon]` for parked entities | Blocks the constrained agent or its active box from occupying that cell at the constrained time/range. |
+| Edge/swap | `(agent, from, to, time)` | Blocks the constrained agent or active box from traversing that edge at that time. |
+
+The final accept gate is still `plan_is_server_valid`, so an invalid CBS plan is
+never emitted. CBS-specific knobs are `AIMAS_CBS_CLASSIC_BUDGET_S` (reserve time
+from the older pipeline), `AIMAS_CBS_BUDGET_S`, `AIMAS_CBS_LOW_LEVEL_BUDGET_S`,
+`AIMAS_CBS_MAX_NODES`, `AIMAS_CBS_VARIANTS`, `AIMAS_CBS_MAX_AGENTS`, and
+`AIMAS_CBS_MAX_BOXES`.
+
+This is a real CBS mechanism, but it is not yet a full box-MAPF solver. It keeps
+the current fixed task assignment and task order; it can coordinate timing
+between independently planned agents and boxes, but it cannot yet reassign a
+box, change a goal order across agents, or force an inactive future box to be
+moved earlier. Targeted tests on `BigSplit`, `MArtians`, and `ZOOM` produced no
+new solves because their current failures still occur inside the low-level box
+delivery planner before high-level CBS branching can help.
 
 Before any selected strategy runs, `prioritized::basic_goal_feasibility` rejects simple impossible metadata cases:
 
@@ -162,8 +238,8 @@ The current `main` chooses whether to run the prioritized planner based on the f
 
 | Invocation | Flow |
 |---|---|
-| no flag | prioritized planner -> serial fallback -> bounded WA*(5) -> final smart WA*(3) graph search |
-| `-prioritized`, `-pp` | prioritized planner -> serial fallback -> bounded WA*(5) -> stop if still unsolved |
+| no flag | prioritized planner -> serial fallback -> optional `AIMAS_ENABLE_CBS_REPLAN` fallback -> bounded WA*(5) -> optional `AIMAS_ENABLE_WINDOWED_REPLAN` fallback -> final smart WA*(3) graph search |
+| `-prioritized`, `-pp` | prioritized planner -> serial fallback -> optional `AIMAS_ENABLE_CBS_REPLAN` fallback -> bounded WA*(5) -> optional `AIMAS_ENABLE_WINDOWED_REPLAN` fallback -> stop if still unsolved |
 | `-prioritized-fallback`, `-pp-fallback` | prioritized planner -> serial fallback -> final smart WA*(3) graph search |
 | any graph-search flag | run the selected graph search directly |
 
@@ -412,7 +488,7 @@ The benchmark runner:
 - records solution length, wall time, timeout status, and logs;
 - writes CSV and Markdown summaries.
 
-`searchclient_cpp/solved_levels.md` tracks verified solved levels for the prioritized strategy. The current verified baseline is 90 / 104 in `levels`, 0 / 6 in `new_comp_levels`, and 25 / 47 in `complevels`.
+`searchclient_cpp/solved_levels.md` tracks verified solved levels for the prioritized strategy. The current verified default baseline is 90 / 104 in `levels`, 0 / 6 in `new_comp_levels`, and 26 / 47 in `complevels`; the `complevels` increase comes from rechecking the previous solved set plus the parser-fixed `rooMbA.lvl`. With `AIMAS_LNS_REPAIR=1`, the tuned experimental repair also solves `complevels/MArtians.lvl` without solved-set regressions, for an opt-in competition count of 27 / 47.
 
 ## Practical interpretation
 
