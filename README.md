@@ -4,10 +4,10 @@ C++17 search client for the DTU 02285 **AIMAS Hospital
 (Multi-Agent Path Finding with Boxes)** domain, together with the
 Java validation server and the benchmark tooling used to validate it.
 
-> **Status (r23):** **74 / 116** levels solved — 29 / 47 on
-> `complevels` and 45 / 69 on `complevels_2026`. +12 over the
-> previous in-house single-file C++ solver (62 / 116), in ~25 %
-> less code.
+> **Status (r41):** **78 / 116** levels solved — 30 / 47 on
+> `complevels` and 48 / 69 on `complevels_2026`. +16 over the
+> previous in-house single-file C++ solver (62 / 116). Also
+> 92 / 104 on `levels/`.
 
 ---
 
@@ -104,9 +104,13 @@ python3 benchmarks/run_all_levels.py \
 |---------------------------------------------|-----------:|----------------:|-------------|
 | Legacy single-file C++ baseline             |          – |               – | 56 / 116    |
 | Legacy single-file C++ (enhanced)           |    27 / 47 |        35 / 69  | 62 / 116    |
-| **`searchclient_cpp_v2` (r23, current)**    |  **29/47** |       **45/69** | **74/116**  |
+| `searchclient_cpp_v2` r23                   |    29 / 47 |        45 / 69  | 74 / 116    |
+| **`searchclient_cpp_v2` (r41, current)**    |  **30/47** |       **48/69** | **78/116**  |
 
-Per-round progression (v2 baseline r4 → current r23) and per-level
+Additionally on `levels/` (course-provided starter levels):
+**92 / 104** solved at r41.
+
+Per-round progression (v2 baseline r4 → current r41) and per-level
 results live in `searchclient_cpp_v2/README.md` and `solved_levels.md`
 respectively. Per-level logs and CSVs are under
 `benchmarks/results/v2-bench-*`.
