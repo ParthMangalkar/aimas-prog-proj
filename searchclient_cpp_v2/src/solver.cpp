@@ -1656,7 +1656,9 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
                                            bool prune_satisfied_boxes,
                                            int  heuristic_weight,
                                            bool active_agent_reduction,
-                                           bool force_divisor_bound)
+                                           bool force_divisor_bound,
+                                           bool relaxed_decoration_aware,
+                                           bool prune_decoration_pushes)
 {
     const bool jv = env_flag_enabled("V2_VERBOSE");
     const int N = static_cast<int>(state_.agent_rows.size());
@@ -1770,15 +1772,18 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
             n_active = keep;
             if (jv) std::cerr << "[v2:jaf] trimmed N_active to " << n_active << "\n";
         }
-        // Blocker promotion: if N_active is too small (1 or 2), the active
-        // agent(s) may be physically blocked by inactive agents sitting on
-        // the only path to any seed cell (letter goal or unmatched same-letter
-        // box). Search will incorrectly conclude infeasibility because
-        // inactive agents are NoOp-only. Promote blockers by BFS-ing each
-        // active agent toward each seed cell (walls+boxes only) and marking
-        // any inactive agent on the resulting shortest path. Capped at
-        // kActiveCap. Rescues GroupWon/TriSplit-class small-residual snapshots.
-        if (n_active >= 1 && n_active <= 2) {
+        // Blocker promotion: if N_active is small, the active agent(s) may
+        // be physically blocked by inactive agents sitting on the only path
+        // to any seed cell (letter goal or unmatched same-letter box).
+        // Search will incorrectly conclude infeasibility because inactive
+        // agents are NoOp-only. Promote blockers by BFS-ing each active
+        // agent toward each seed cell (walls+boxes only) and marking any
+        // inactive agent on the resulting shortest path. Capped at
+        // kActiveCap. Originally gated at n_active <= 2; widened to
+        // n_active <= 4 to rescue cases like escAIpe (N=7, N_active=3)
+        // where the search exhausts with open=0 because a static inactive
+        // agent blocks the only corridor to the unmatched box.
+        if (n_active >= 1 && n_active <= 4) {
             const int R = level_.rows, C = level_.cols;
             // Collect seed cells: unsatisfied letter goals + unmatched
             // same-letter boxes of any color that has an active agent.
@@ -1905,6 +1910,17 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
         }
         if (jv) std::cerr << "[v2:jaf] reduced mode: N=" << N
                           << " N_active=" << n_active << "\n";
+        // Fast-fail when active reduction provides no benefit on small N:
+        // with n_active == N the per-agent action list is identical to
+        // the non-reduced path, so this pass would duplicate the legacy
+        // search at the cost of an extra budget slice. Skip it for N <= 6
+        // (where the non-reduced path runs anyway). Levels with N > 6
+        // still need the reduced path even when all agents activate
+        // because the legacy N > 6 cap blocks the non-reduced one.
+        if (n_active == N && N <= 6) {
+            if (jv) std::cerr << "[v2:jaf] reduced-skip: n_active == N (no branching benefit)\n";
+            return false;
+        }
     }
 
     // Count mismatched letter boxes (those NOT sitting on a matching letter
@@ -1941,6 +1957,26 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
             if (level_.goals[r][c] != b) ++mismatched;
         }
     }
+    // Number of letter-goal cells NOT currently satisfied. This is the true
+    // delivery-work metric (matches the heuristic loop's `n_lg` iteration),
+    // independent of how many "decoration" boxes (boxes whose letter has no
+    // goal anywhere) the level contains. Used by `relaxed_decoration_aware`
+    // mode for eligibility caps.
+    int unsat_letter_goals = 0;
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            const char g = level_.goals[r][c];
+            if (g >= 'A' && g <= 'Z' && state_.boxes[r][c] != g) {
+                ++unsat_letter_goals;
+            }
+        }
+    }
+    // In relaxed mode, gate on `unsat_letter_goals` instead of the inflated
+    // `mismatched`. Identical on non-decoration levels (where every movable
+    // box has exactly one matching goal), strictly looser on decoration-
+    // heavy levels.
+    const int mis_for_elig = relaxed_decoration_aware ? unsat_letter_goals
+                                                      : mismatched;
     // For reduced mode, the more meaningful sizing metric is the cell count
     // walls-only-reachable from the active sub-problem (component-local).
     const int residual_cells = active_agent_reduction
@@ -1957,21 +1993,21 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
         // generation regardless of total box count.
         bool ok = false;
         if (n_active <= 3) {
-            ok = (mismatched <= 20 && residual_cells <= 800);
+            ok = (mis_for_elig <= 20 && residual_cells <= 800);
         } else if (n_active == 4) {
-            ok = (mismatched <= 16 && residual_cells <= 600);
+            ok = (mis_for_elig <= 16 && residual_cells <= 600);
         } else if (n_active == 5) {
-            ok = (mismatched <= 14 && residual_cells <= 500);
+            ok = (mis_for_elig <= 14 && residual_cells <= 500);
         } else if (n_active == 6) {
-            ok = (mismatched <= 12 && residual_cells <= 400);
+            ok = (mis_for_elig <= 12 && residual_cells <= 400);
         }
         // Positioning-only relax: when all letter goals are satisfied
-        // (mismatched==0), action set collapses to Move/NoOp (Push/Pull
+        // (mis_for_elig==0), action set collapses to Move/NoOp (Push/Pull
         // would unsatisfy a box) so branching is bounded by 5^N_active
         // rather than 9^N_active. Allow larger residual maps in that
         // regime — rescues MAze-class final-positioning failures with
         // ~500-cell active sub-region.
-        if (!ok && mismatched == 0) {
+        if (!ok && mis_for_elig == 0) {
             if      (n_active <= 3) ok = (residual_cells <= 1500);
             else if (n_active == 4) ok = (residual_cells <= 1000);
             else if (n_active == 5) ok = (residual_cells <= 800);
@@ -1981,7 +2017,7 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
         // (≤ 6), most actions reduce to positioning; allow large residual
         // maps. Rescues WardRush/ClauDOom-class snapshots that get close
         // to delivery completion but have a large open arena.
-        if (!ok && mismatched <= 6) {
+        if (!ok && mis_for_elig <= 6) {
             if      (n_active <= 3) ok = (residual_cells <= 1200);
             else if (n_active == 4) ok = (residual_cells <= 900);
             else if (n_active == 5) ok = (residual_cells <= 750);
@@ -1990,16 +2026,21 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
         if (!ok) {
             if (jv) std::cerr << "[v2:jaf] reject elig REDUCED N_active=" << n_active
                               << " mis=" << mismatched
+                              << " unsat=" << unsat_letter_goals
                               << " residual=" << residual_cells
-                              << " total=" << total_movable << "\n";
+                              << " total=" << total_movable
+                              << " relaxed=" << (relaxed_decoration_aware ? 1 : 0)
+                              << "\n";
             return false;
         }
         if (jv) std::cerr << "[v2:jaf] eligible REDUCED N=" << N
                           << " N_active=" << n_active
                           << " mis=" << mismatched
+                          << " unsat=" << unsat_letter_goals
                           << " residual=" << residual_cells
                           << " total=" << total_movable
-                          << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                          << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0)
+                          << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
     } else if (N <= 3) {
         // Three escalating tiers:
         //   (a) baseline: tight caps on all axes
@@ -2012,68 +2053,78 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
         //       is small the search frontier is bounded by mismatched-many
         //       box-transports + N-many agent positionings. Admits large
         //       total_movable (ZOOM-class redelivery puzzles).
-        bool ok_a = (mismatched <= 12 && cell_count <= 320 && total_movable <= 28);
-        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 50);
+        bool ok_a = (mis_for_elig <= 12 && cell_count <= 320 && total_movable <= 28);
+        bool ok_b = (mis_for_elig == 0 && cell_count <= 700 && total_movable <= 50);
         bool ok_c = (prune_satisfied_boxes
-                     && mismatched <= 18
+                     && mis_for_elig <= 18
                      && cell_count <= 600);
-        bool ok_d = (mismatched <= 14 && cell_count <= 500
+        bool ok_d = (mis_for_elig <= 14 && cell_count <= 500
                      && total_movable <= 110);
         if (!(ok_a || ok_b || ok_c || ok_d)) {
             if (jv) std::cerr << "[v2:jaf] reject elig N<=3 mis=" << mismatched
+                              << " unsat=" << unsat_letter_goals
                               << " cells=" << cell_count << " total=" << total_movable
-                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0)
+                              << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
             return false;
         }
     } else if (N == 4) {
-        bool ok_a = (mismatched <= 10 && cell_count <= 300 && total_movable <= 20);
-        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 35);
+        bool ok_a = (mis_for_elig <= 10 && cell_count <= 300 && total_movable <= 20);
+        bool ok_b = (mis_for_elig == 0 && cell_count <= 700 && total_movable <= 35);
         bool ok_c = (prune_satisfied_boxes
-                     && mismatched <= 14
+                     && mis_for_elig <= 14
                      && cell_count <= 500);
-        bool ok_d = (mismatched <= 10 && cell_count <= 400
+        bool ok_d = (mis_for_elig <= 10 && cell_count <= 400
                      && total_movable <= 60);
         if (!(ok_a || ok_b || ok_c || ok_d)) {
             if (jv) std::cerr << "[v2:jaf] reject elig N==4 mis=" << mismatched
+                              << " unsat=" << unsat_letter_goals
                               << " cells=" << cell_count << " total=" << total_movable
-                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0)
+                              << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
             return false;
         }
     } else if (N == 5) {
         // Branching factor up to 9^5=59k per node in worst case; in practice
         // per-agent applicable filter keeps it much lower in tight mazes.
         // Tight eligibility: keep state space + total work small.
-        bool ok_a = (mismatched <= 10 && cell_count <= 250 && total_movable <= 14);
+        bool ok_a = (mis_for_elig <= 10 && cell_count <= 250 && total_movable <= 14);
         // Positioning-only: when mis==0, branching is bounded by 5^N=3125
         // (Move/NoOp only) so we can admit larger maps + more boxes.
-        bool ok_b = (mismatched == 0 && cell_count <= 900 && total_movable <= 30);
+        bool ok_b = (mis_for_elig == 0 && cell_count <= 900 && total_movable <= 30);
         bool ok_c = (prune_satisfied_boxes
-                     && mismatched <= 8
+                     && mis_for_elig <= 8
                      && cell_count <= 400);
         if (!(ok_a || ok_b || ok_c)) {
             if (jv) std::cerr << "[v2:jaf] reject elig N==5 mis=" << mismatched
+                              << " unsat=" << unsat_letter_goals
                               << " cells=" << cell_count << " total=" << total_movable
-                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0)
+                              << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
             return false;
         }
     } else {  // N == 6
         // Even tighter: 9^6=531k per node worst-case branching.
-        bool ok_a = (mismatched <= 8 && cell_count <= 200 && total_movable <= 10);
-        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 25);
+        bool ok_a = (mis_for_elig <= 8 && cell_count <= 200 && total_movable <= 10);
+        bool ok_b = (mis_for_elig == 0 && cell_count <= 700 && total_movable <= 25);
         bool ok_c = (prune_satisfied_boxes
-                     && mismatched <= 6
+                     && mis_for_elig <= 6
                      && cell_count <= 350);
         if (!(ok_a || ok_b || ok_c)) {
             if (jv) std::cerr << "[v2:jaf] reject elig N==6 mis=" << mismatched
+                              << " unsat=" << unsat_letter_goals
                               << " cells=" << cell_count << " total=" << total_movable
-                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0)
+                              << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
             return false;
         }
     }
     if (!active_agent_reduction && jv) {
         std::cerr << "[v2:jaf] eligible N=" << N << " mis=" << mismatched
+                  << " unsat=" << unsat_letter_goals
                   << " cells=" << cell_count << " total=" << total_movable
-                  << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+                  << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0)
+                  << " relaxed=" << (relaxed_decoration_aware ? 1 : 0) << "\n";
     }
 
     auto now = std::chrono::steady_clock::now();
@@ -2108,6 +2159,18 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
                 const int ai = g - '0';
                 if (ai < N) agent_goals.push_back({r, c, ai});
             }
+        }
+    }
+
+    // For decoration-push pruning: bitset of which letters have ≥1 goal
+    // anywhere on the board. Boxes whose letter is NOT in this set are
+    // "decoration" — moving them never reduces the heuristic and they
+    // almost never block solvability. Skipping their Push/Pull successors
+    // dramatically narrows branching at the cost of (rare) incompleteness.
+    std::array<bool, 26> letter_has_goal{};
+    for (const auto& lg : letter_goals) {
+        if (lg.letter >= 'A' && lg.letter <= 'Z') {
+            letter_has_goal[lg.letter - 'A'] = true;
         }
     }
 
@@ -2361,6 +2424,29 @@ bool Solver::solve_joint_full_from_current(int  budget_seconds,
                     if (br >= 0 && br < level_.rows && bc >= 0 && bc < level_.cols) {
                         const char b = cur.state.boxes[br][bc];
                         if (b >= 'A' && b <= 'Z' && level_.goals[br][bc] == b) continue;
+                    }
+                }
+                // Decoration prune (when prune_decoration_pushes=true):
+                // skip Push/Pull on any box whose letter has NO goal cell
+                // anywhere on the board. The heuristic never accounts for
+                // such moves (they cannot reduce h), so they only waste
+                // search effort. Sound — any plan found is valid. INCOMPLETE
+                // — misses solutions that legitimately route through a
+                // decoration push (rare; fallback passes without this prune
+                // cover those cases).
+                if (prune_decoration_pushes && act.type == ActionType::Push) {
+                    const int br = ar + act.agent_dr;
+                    const int bc = ac + act.agent_dc;
+                    if (br >= 0 && br < level_.rows && bc >= 0 && bc < level_.cols) {
+                        const char b = cur.state.boxes[br][bc];
+                        if (b >= 'A' && b <= 'Z' && !letter_has_goal[b - 'A']) continue;
+                    }
+                } else if (prune_decoration_pushes && act.type == ActionType::Pull) {
+                    const int br = ar - act.box_dr;
+                    const int bc = ac - act.box_dc;
+                    if (br >= 0 && br < level_.rows && bc >= 0 && bc < level_.cols) {
+                        const char b = cur.state.boxes[br][bc];
+                        if (b >= 'A' && b <= 'Z' && !letter_has_goal[b - 'A']) continue;
                     }
                 }
                 if (cur.state.applicable(a, act)) per_agent[a].push_back(k);
@@ -3722,6 +3808,89 @@ std::vector<std::vector<int>> Solver::solve()
         }
     }
 
+    if (!overall_time_up() && best_snapshot_.valid && best_snapshot_.letter_goals_satisfied > 0) {
+        // Quick decoration-density check on the snapshot. Counts boxes
+        // whose letter has NO goal anywhere on the board. When this
+        // density is high (many decoration boxes), the per-node branching
+        // is dominated by pushes that cannot reduce the heuristic — so a
+        // SOUND-BUT-INCOMPLETE decoration-prune pass run BEFORE the
+        // standard chain has a much better chance of finding any valid
+        // plan within the per-pass budget. On low-decoration levels this
+        // check returns 0 and the early pass is skipped, preserving
+        // existing behaviour for non-decoration levels.
+        const State& snap_st = best_snapshot_.state;
+        std::array<bool, 26> _lhg{};
+        for (int rr = 0; rr < level_.rows; ++rr) {
+            for (int cc = 0; cc < level_.cols; ++cc) {
+                const char gg = level_.goals[rr][cc];
+                if (gg >= 'A' && gg <= 'Z') _lhg[gg - 'A'] = true;
+            }
+        }
+        int decoration_box_count = 0;
+        for (int rr = 0; rr < level_.rows; ++rr) {
+            for (int cc = 0; cc < level_.cols; ++cc) {
+                const char bb = snap_st.boxes[rr][cc];
+                if (bb >= 'A' && bb <= 'Z' && !_lhg[bb - 'A']) ++decoration_box_count;
+            }
+        }
+        // Threshold: meaningful decoration only when there are clearly
+        // many wasted-push options. Skips levels with 0-4 decoration boxes
+        // (where standard passes work fine and the prune cost outweighs
+        // the benefit).
+        if (decoration_box_count >= 5) {
+            const State snap_state = best_snapshot_.state;
+            const auto  snap_plan  = best_snapshot_.plan;
+            const int N_total = static_cast<int>(snap_state.agent_rows.size());
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass0D (decoration-prune early, N=" << N_total
+                                   << " decor=" << decoration_box_count << ")\n";
+            // Reduced budget (3s) and reduced N→legacy gate so we don't
+            // displace the existing layer B passes' time too much. Uses
+            // prune_satisfied AND prune_decoration to maximally narrow
+            // branching; W=5 for speed.
+            if (solve_joint_full_from_current(/*budget_seconds=*/3,
+                                              /*prune_satisfied_boxes=*/true,
+                                              /*heuristic_weight=*/5,
+                                              /*active_agent_reduction=*/(N_total > 6),
+                                              /*force_divisor_bound=*/false,
+                                              /*relaxed_decoration_aware=*/true,
+                                              /*prune_decoration_pushes=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass0D (decoration-prune early) SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass 0E: ACTIVE-REDUCED joint A* for N ≤ 6 levels run EARLY in
+        // the snapshot chain (before pass1) so it gets meaningful budget
+        // even when the standard chain would otherwise exhaust the
+        // 27 s soft deadline. The function fast-fails when reduction
+        // would not actually shrink branching (n_active == N), so the
+        // cost on non-reducible levels is negligible. Targets the
+        // "almost-done residual with 1-2 boxes to deliver and a handful
+        // of idle co-agents" pattern (DayBreak/CudBSlvd/KUTitans-class).
+        if (!overall_time_up()) {
+            const State snap_state = best_snapshot_.state;
+            const auto  snap_plan  = best_snapshot_.plan;
+            const int N_total = static_cast<int>(snap_state.agent_rows.size());
+            if (N_total >= 3 && N_total <= 6) {
+                state_ = snap_state;
+                plan_  = snap_plan;
+                if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass0E (ACTIVE-REDUCED N<=6 early)\n";
+                if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                                  /*prune_satisfied_boxes=*/true,
+                                                  /*heuristic_weight=*/5,
+                                                  /*active_agent_reduction=*/true,
+                                                  /*force_divisor_bound=*/false,
+                                                  /*relaxed_decoration_aware=*/true)
+                    && state_.goal_state()) {
+                    if (verbose) std::cerr << "[v2] joint A* pass0E (ACTIVE-REDUCED N<=6 early) SOLVED\n";
+                    return finalize(plan_);
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Last-resort fallback layer B: launch full joint A* from the BEST
     // partial-progress snapshot captured across all variant attempts.
@@ -3840,6 +4009,7 @@ std::vector<std::vector<int>> Solver::solve()
             }
         }
 
+
         // Pass 4 & 5: active-agent-reduced joint A*. Lifts the N ≤ 6 cap
         // so levels with many agents but only a few "active" ones
         // (component-local + color-relevant) can be solved through the
@@ -3921,6 +4091,88 @@ std::vector<std::vector<int>> Solver::solve()
                                               /*active_agent_reduction=*/true)
                 && state_.goal_state()) {
                 if (verbose) std::cerr << "[v2] reduced joint A* (from initial, W=8) SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Last-resort fallback layer C: DECORATION-AWARE relaxed eligibility.
+    //
+    // On decoration-heavy levels (DatzCrazy-class: many movable boxes but
+    // few letter goals), the standard eligibility gate inflates `mismatched`
+    // by counting every box-not-on-matching-goal, including boxes whose
+    // letter has no goal anywhere on the board. These decoration boxes
+    // affect branching minimally (Push/Pull successors are filtered by
+    // applicable-action checks) but cause the standard eligibility to
+    // reject the snapshot outright. The relaxed gate keys off
+    // `unsat_letter_goals` (count of letter-goal cells not yet satisfied),
+    // which is exactly what the heuristic measures — and matches the actual
+    // delivery work remaining.
+    //
+    // Strictly additive: on non-decoration levels (where every movable box
+    // has exactly one matching letter goal), `unsat_letter_goals` equals
+    // the standard `mismatched`, so the relaxed gate behaves identically
+    // to the standard gate and the pass returns false fast. On decoration-
+    // heavy levels, the pass admits the snapshot and tries to finish it
+    // under a tight wall-clock budget. Failure rolls back state and plan.
+    // ---------------------------------------------------------------------
+    if (!overall_time_up() && best_snapshot_.valid) {
+        const State snap_state = best_snapshot_.state;
+        const auto  snap_plan  = best_snapshot_.plan;
+        const int N_total = static_cast<int>(snap_state.agent_rows.size());
+        // Pass C1 — decoration-aware reduced (N > 6), prune satisfied, W=5.
+        if (N_total > 6 && !overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot passC1 (REDUCED, DECORATION-AWARE, W=5)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                              /*prune_satisfied_boxes=*/true,
+                                              /*heuristic_weight=*/5,
+                                              /*active_agent_reduction=*/true,
+                                              /*force_divisor_bound=*/false,
+                                              /*relaxed_decoration_aware=*/true,
+                                              /*prune_decoration_pushes=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* passC1 (REDUCED, DECORATION-AWARE) SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass C2 — decoration-aware reduced (N > 6), no prune, W=10.
+        // No prune lets the search displace satisfied boxes (pacMAn-style
+        // necessary detours through tight corridors).
+        if (N_total > 6 && !overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot passC2 (REDUCED, DECORATION-AWARE, no prune, W=10)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/10,
+                                              /*active_agent_reduction=*/true,
+                                              /*force_divisor_bound=*/false,
+                                              /*relaxed_decoration_aware=*/true,
+                                              /*prune_decoration_pushes=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* passC2 (REDUCED, DECORATION-AWARE) SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass C3 — decoration-aware non-reduced (N ≤ 6), prune satisfied,
+        // W=5. Covers the small-N decoration-heavy case (no active reduction
+        // available because all agents fit under the legacy N ≤ 6 cap).
+        if (N_total <= 6 && !overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot passC3 (DECORATION-AWARE, W=5)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                              /*prune_satisfied_boxes=*/true,
+                                              /*heuristic_weight=*/5,
+                                              /*active_agent_reduction=*/false,
+                                              /*force_divisor_bound=*/false,
+                                              /*relaxed_decoration_aware=*/true,
+                                              /*prune_decoration_pushes=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* passC3 (DECORATION-AWARE) SOLVED\n";
                 return finalize(plan_);
             }
         }

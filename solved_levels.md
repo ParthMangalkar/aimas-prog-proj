@@ -1,16 +1,16 @@
 # Solved Levels
 
-Method: `searchclient_cpp_v2` build r41 (current — adds snapshot-based bounded joint A\* fallback chain with active-agent reduction and gated divisor-bound heuristic).
+Method: `searchclient_cpp_v2` build r43 (current — extends r41's snapshot-based bounded joint A\* fallback chain with two additional early passes: **pass0D** (decoration-prune early, sound-but-incomplete branching reduction that skips Push/Pull on letters with no goal anywhere) and **pass0E** (active-agent reduction for N ≤ 6 with `relaxed_decoration_aware` eligibility, gives EpicfAIl). Also widens blocker-promotion gate from `n_active ≤ 2` to `n_active ≤ 4`.).
 Benchmark conventions: `--algorithm=-prioritized --timeout 30 --max-joint-actions 20000 --normalize` against `misc/server.jar`.
-Source CSVs: `benchmarks/results/v2-bench-complevels-r41.csv`, `benchmarks/results/v2-bench-complevels-2026-r41.csv`.
+Source CSVs: `benchmarks/results/v2-bench-complevels-r41.csv`, `benchmarks/results/v2-bench-complevels-2026-r41.csv` (r43 deltas captured in this file; new r43 CSV not yet regenerated).
 
 ## Summary
 
 | Level Folder | Solved | Total |
 |---|---:|---:|
-| `complevels` | 30 | 47 |
+| `complevels` | 31 | 47 |
 | `complevels_2026` | 48 | 69 |
-| **Total** | **78** | **116** |
+| **Total** | **79** | **116** |
 
 Additionally on the course-provided starter set `levels/`: **92 / 104** solved at r41 (see `benchmarks/results/v2-bench-levels-r41.csv` / `.md`).
 
@@ -27,7 +27,7 @@ Additionally on the course-provided starter set `levels/`: **92 / 104** solved a
 | 7 | `DASH` | `complevels` | Yes | 0.081s | 191 | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
 | 8 | `DECrunchy` | `complevels` | No | 27.120s |  | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
 | 9 | `DatzCrazy` | `complevels` | No | 0.071s |  | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
-| 10 | `EpicfAIl` | `complevels` | No | 27.246s |  | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
+| 10 | `EpicfAIl` | `complevels` | Yes | 5.627s | 77 | Snapshot-based bounded joint A\* **pass0E** (r43: ACTIVE-REDUCED early, N ≤ 6 with `relaxed_decoration_aware` eligibility, prune_sat=true, W=5, 4s budget) — blocker promotion widens to `n_active ≤ 4` so N=4 collapses to N_active=3 |
 | 11 | `GHandDirt` | `complevels` | Yes | 0.074s | 51 | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
 | 12 | `GroupEZ` | `complevels` | No | 0.105s |  | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |
 | 13 | `ISO` | `complevels` | Yes | 9.820s | 3525 | Modular v2 (`-prioritized`, r41): matched-greedy + DP-optimal task variants → defer/scatter/corridor-evac/relocation delivery → PIBT + cooperative A\* + serial + agent-only joint A\* final phase → min-max-DP/shuffle extras → from-initial joint A\* (W=3,W=5) → snapshot-based bounded joint A\* chain (passes 1..5b: gated + force-divisor-bound + active-agent reduction) |

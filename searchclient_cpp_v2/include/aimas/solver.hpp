@@ -186,11 +186,34 @@ private:
     //     (cells reachable walls-only from active agents + relevant
     //     boxes/goals), with looser caps because branching = 9^N_active.
     //   - This unlocks levels where N_total > 6 but N_active ≤ 4.
+    // `relaxed_decoration_aware`: when true, the eligibility caps that read
+    // the snapshot's `mismatched` count (movable+colored boxes not on a
+    // matching letter goal) instead use `unsat_letter_goals` (number of
+    // letter-goal cells not currently satisfied). On levels with many
+    // "decoration" boxes — same-letter boxes for which no goal exists
+    // anywhere on the board — `mismatched` overstates the delivery work and
+    // wrongly rejects perfectly-solvable residuals (e.g. DatzCrazy: 57
+    // movable boxes but only 2 letter goals). `unsat_letter_goals` is the
+    // true delivery-work metric used by the heuristic. Used by a late,
+    // strictly-additive fallback pass in solve() so non-decoration levels
+    // (where the two metrics agree) are unaffected.
+    // `prune_decoration_pushes`: when true, the per-agent successor filter
+    // ALSO skips Push/Pull actions on boxes whose letter has NO goal
+    // anywhere on the board ("decoration" boxes). Moving a decoration box
+    // is never required by the heuristic and almost never required for
+    // solvability — but a decoration box CAN occasionally block a critical
+    // corridor, so this prune is INCOMPLETE (may miss solutions that route
+    // through a decoration push). It is, however, SOUND: any plan produced
+    // is valid. Use only in fallback passes where the incompleteness is
+    // backed by other passes without the prune. Dramatically reduces
+    // branching on decoration-heavy levels (ZOOM/PinWheel/DECrunchy-class).
     bool solve_joint_full_from_current(int  budget_seconds            = 5,
                                        bool prune_satisfied_boxes     = true,
                                        int  heuristic_weight          = 3,
                                        bool active_agent_reduction    = false,
-                                       bool force_divisor_bound       = false);
+                                       bool force_divisor_bound       = false,
+                                       bool relaxed_decoration_aware  = false,
+                                       bool prune_decoration_pushes   = false);
 
     // Convenience wrapper: reset state_ to initial, clear plan_, then run
     // solve_joint_full_from_current. Kept for backwards-compatibility of
