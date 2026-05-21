@@ -88,3 +88,7 @@ other_misc/
 # IntelliJ build output
 misc/out/
 research_papers/
+hand-in-files/
+*.zip
+MAmaMASS/
+server.public

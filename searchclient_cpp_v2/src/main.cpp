@@ -21,7 +21,7 @@ int main(int /*argc*/, char* /*argv*/[])
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
-    std::cout << "searchclient_cpp_v2" << std::endl;
+    std::cout << "MAmaMASS" << std::endl;
     std::cout << "#modular v2 baseline" << std::endl;
 
     Level level = parse_level(std::cin);
