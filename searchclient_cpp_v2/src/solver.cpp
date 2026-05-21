@@ -3,6 +3,8 @@
 #include "aimas/pibt.hpp"
 
 #include <algorithm>
+#include <array>
+#include <climits>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -996,6 +998,17 @@ bool Solver::evacuate_final_goal_agent_blockers()
 
 bool Solver::complete_agent_goals()
 {
+    if (env_flag_enabled("V2_VERBOSE")) {
+        std::cerr << "[v2:cag] ENTRY plan_len=" << plan_.size() << " agents:";
+        for (int a = 0; a < (int)state_.agent_rows.size(); ++a)
+            std::cerr << " a" << a << "=(" << state_.agent_rows[a] << "," << state_.agent_cols[a] << ")";
+        std::cerr << " boxes:";
+        for (int r = 0; r < level_.rows; ++r)
+            for (int c = 0; c < level_.cols; ++c)
+                if (state_.boxes[r][c] != '\0')
+                    std::cerr << " " << state_.boxes[r][c] << "(" << r << "," << c << ")";
+        std::cerr << "\n";
+    }
     // Sequence: PIBT → serial → evac-other-agents + PIBT → serial → clear-
     // box-blockers + PIBT → serial. Each attempt is transactional: snapshot
     // and roll back on failure so we don't commit half-finished moves that
@@ -1006,31 +1019,35 @@ bool Solver::complete_agent_goals()
     //             multi-agent levels (CphAirprt-class) where agents finish
     //             box deliveries near goal cells of OTHER agents.
     //   layer 2 — relocate BOX BLOCKERS off any agent's path.
-    auto try_attempt = [&](auto&& fn) -> bool {
+    const bool _cag_v = env_flag_enabled("V2_VERBOSE");
+    auto try_attempt = [&](const char* nm, auto&& fn) -> bool {
         const std::size_t snap_len = plan_.size();
         const State snap_state = state_;
-        if (fn()) return true;
+        bool ok = fn();
+        if (_cag_v) std::cerr << "[v2:cag]   try " << nm << " => " << (ok ? "OK" : "fail") << " plan_len=" << plan_.size() << "\n";
+        if (ok) return true;
         state_ = snap_state;
         plan_.resize(snap_len);
         return false;
     };
 
-    if (try_attempt([&]{ return complete_agent_goals_pibt(); })) return true;
-    if (try_attempt([&]{ return complete_agent_goals_reserved(); })) return true;
-    if (try_attempt([&]{ return complete_agent_goals_serial(); })) return true;
+    if (try_attempt("pibt", [&]{ return complete_agent_goals_pibt(); })) return true;
+    if (try_attempt("reserved", [&]{ return complete_agent_goals_reserved(); })) return true;
+    if (try_attempt("serial", [&]{ return complete_agent_goals_serial(); })) return true;
     for (int round = 0; round < 4; ++round) {
         if (variant_time_up()) break;
         const std::size_t snap_len = plan_.size();
         const State snap_state = state_;
         const bool moved = evacuate_final_goal_agent_blockers();
+        if (_cag_v) std::cerr << "[v2:cag]   evac r" << round << " moved=" << moved << "\n";
         if (!moved) {
             state_ = snap_state;
             plan_.resize(snap_len);
             break;
         }
-        if (try_attempt([&]{ return complete_agent_goals_pibt(); })) return true;
-        if (try_attempt([&]{ return complete_agent_goals_reserved(); })) return true;
-        if (try_attempt([&]{ return complete_agent_goals_serial(); })) return true;
+        if (try_attempt("pibt", [&]{ return complete_agent_goals_pibt(); })) return true;
+        if (try_attempt("reserved", [&]{ return complete_agent_goals_reserved(); })) return true;
+        if (try_attempt("serial", [&]{ return complete_agent_goals_serial(); })) return true;
     }
 
     // Layer 2: snapshot before clearing box blockers so we can roll back if
@@ -1038,10 +1055,11 @@ bool Solver::complete_agent_goals()
     const std::size_t pre_clear_len = plan_.size();
     const State pre_clear_state = state_;
     clear_paths_to_agent_goals();
+    if (_cag_v) std::cerr << "[v2:cag]   after clear_paths plan_len=" << plan_.size() << "\n";
 
-    if (try_attempt([&]{ return complete_agent_goals_pibt(); })) return true;
-    if (try_attempt([&]{ return complete_agent_goals_reserved(); })) return true;
-    if (try_attempt([&]{ return complete_agent_goals_serial(); })) return true;
+    if (try_attempt("pibt(post-clear)", [&]{ return complete_agent_goals_pibt(); })) return true;
+    if (try_attempt("reserved(post-clear)", [&]{ return complete_agent_goals_reserved(); })) return true;
+    if (try_attempt("serial(post-clear)", [&]{ return complete_agent_goals_serial(); })) return true;
 
     // One more agent-eviction pass after box clearing (box clearing may have
     // shifted agent positions onto goal cells).
@@ -1050,22 +1068,35 @@ bool Solver::complete_agent_goals()
         const std::size_t snap_len = plan_.size();
         const State snap_state = state_;
         const bool moved = evacuate_final_goal_agent_blockers();
+        if (_cag_v) std::cerr << "[v2:cag]   post-clear evac r" << round << " moved=" << moved << "\n";
         if (!moved) {
             state_ = snap_state;
             plan_.resize(snap_len);
             break;
         }
-        if (try_attempt([&]{ return complete_agent_goals_pibt(); })) return true;
-        if (try_attempt([&]{ return complete_agent_goals_reserved(); })) return true;
-        if (try_attempt([&]{ return complete_agent_goals_serial(); })) return true;
+        if (try_attempt("pibt(post-evac)", [&]{ return complete_agent_goals_pibt(); })) return true;
+        if (try_attempt("reserved(post-evac)", [&]{ return complete_agent_goals_reserved(); })) return true;
+        if (try_attempt("serial(post-evac)", [&]{ return complete_agent_goals_serial(); })) return true;
     }
 
-    // Last resort: joint A* over agent positions only. Only fires for ≤4
+    // Last resort: joint A* over agent positions only. Only fires for ≤6
     // agents (branching factor 5^N) and is guarded by a 200k expansion
     // cap + the variant deadline. Targets tight rotation/swap puzzles
     // where PIBT, cooperative A* and serial all give up. On larger
-    // levels (N > 4) the method returns false immediately.
-    if (try_attempt([&]{ return complete_agent_goals_joint(); })) return true;
+    // levels (N > 6) the method returns false immediately.
+    if (try_attempt("cagj", [&]{ return complete_agent_goals_joint(); })) return true;
+
+    // Active-agent-reduced variant: same algorithm but only agents whose
+    // numeric goal is unsatisfied actually search; the rest emit NoOp. This
+    // lifts the N ≤ 6 cap to "N_active ≤ 6" and rescues CphAirprt-class
+    // situations where there are many agents on the board but only a
+    // handful still need to reach their goal cell. Static inactive agents
+    // sit in place — sound, but they may block the active set; that is
+    // acceptable as a fallback (no regression on N ≤ 6 because the legacy
+    // path runs first).
+    if (static_cast<int>(state_.agent_rows.size()) > 6) {
+        if (try_attempt("cagj-reduced", [&]{ return complete_agent_goals_joint(/*active=*/true); })) return true;
+    }
 
     state_ = pre_clear_state;
     plan_.resize(pre_clear_len);
@@ -1178,18 +1209,29 @@ void Solver::clear_paths_to_agent_goals()
     }
 }
 
-bool Solver::complete_agent_goals_joint()
+bool Solver::complete_agent_goals_joint(bool active_agent_reduction)
 {
     // Joint A* over (agent positions only) treating walls + current boxes as
     // static obstacles. Targets tight rotation/swap puzzles that PIBT,
     // cooperative A*, and serial BFS all give up on (Apdo-style, where the
     // agents-on-each-others'-goal-cell case requires real cooperative motion
     // and the box layout is fixed). Branching factor is 5^N (4 Moves +
-    // NoOp per agent); capped to N ≤ 4 so 5^4 = 625 successors per node
-    // stays tractable. Other safeties: 200k expansion cap, per-variant
-    // deadline check, full state/plan rollback on any failure.
+    // NoOp per agent); capped to N ≤ 6 in the legacy path so 5^6 = 15625
+    // successors per node remains tractable for short residuals. With
+    // active_agent_reduction=true, inactive agents (those already on their
+    // numeric goal, or with no goal) only emit NoOp, so effective branching
+    // becomes 5^N_active — allowing larger boards (up to 16 agents) as long
+    // as only a few still need to move.
+    // Other safeties: 200k expansion cap, per-variant deadline check, full
+    // state/plan rollback on any failure.
     const int N = static_cast<int>(state_.agent_rows.size());
-    if (N < 1 || N > 4) return false;
+    constexpr int kAbsMaxN = 16;
+    const bool jv = env_flag_enabled("V2_VERBOSE");
+    if (N < 1 || N > kAbsMaxN) return false;
+    if (!active_agent_reduction && N > 6) {
+        if (jv) std::cerr << "[v2:cagj] reject N=" << N << " (no active reduction)\n";
+        return false;
+    }
 
     const auto targets = agent_goal_targets();
 
@@ -1202,6 +1244,109 @@ bool Solver::complete_agent_goals_joint()
         return true;
     };
     if (all_done()) return true;
+
+    // Active mask: agent is active iff it has a numeric goal AND is not yet
+    // sitting on it. Inactive agents will only emit NoOp; this is sound
+    // because the goal predicate (is_goal below) treats inactive agents as
+    // "already done" via the same targets[] check.
+    std::vector<bool> active(N, true);
+    int n_active = N;
+    if (active_agent_reduction) {
+        n_active = 0;
+        for (int a = 0; a < N; ++a) {
+            const auto& t = targets[a];
+            const bool has_goal = (t.first >= 0);
+            const bool at_goal  = has_goal
+                && state_.agent_rows[a] == t.first
+                && state_.agent_cols[a] == t.second;
+            active[a] = has_goal && !at_goal;
+            if (active[a]) ++n_active;
+        }
+        // Blocker promotion: in tight corridors (CphAirprt-class), inactive
+        // agents may sit on the only shortest path between an active agent
+        // and its goal. Without promotion the joint search treats them as
+        // immovable walls and falsely concludes infeasibility. We BFS each
+        // active agent's shortest path over walls+boxes only (ignoring
+        // agents) and mark any inactive agent currently on such a path as
+        // active. This rescues rotation/swap puzzles by including the
+        // necessary blockers in the joint search.
+        if (n_active >= 1 && n_active <= 5) {
+            const int R = level_.rows;
+            const int C = level_.cols;
+            std::vector<std::vector<bool>> static_obstacle(R, std::vector<bool>(C, false));
+            for (int r = 0; r < R; ++r) {
+                for (int c = 0; c < C; ++c) {
+                    if (level_.walls[r][c]) static_obstacle[r][c] = true;
+                    else if (state_.boxes[r][c] != '\0') static_obstacle[r][c] = true;
+                }
+            }
+            std::vector<std::pair<int, int>> agent_cells(N);
+            for (int a = 0; a < N; ++a) {
+                agent_cells[a] = {state_.agent_rows[a], state_.agent_cols[a]};
+            }
+            for (int aa = 0; aa < N && n_active <= 6; ++aa) {
+                if (!active[aa]) continue;
+                const int sr = state_.agent_rows[aa];
+                const int sc = state_.agent_cols[aa];
+                const int gr = targets[aa].first;
+                const int gc = targets[aa].second;
+                if (gr < 0) continue;
+                if (sr == gr && sc == gc) continue;
+                // BFS from start, distances. Then backtrack from goal.
+                std::vector<std::vector<int>> dist(R, std::vector<int>(C, -1));
+                std::deque<std::pair<int, int>> q;
+                dist[sr][sc] = 0;
+                q.emplace_back(sr, sc);
+                static const int ddr[4] = {-1, 1, 0, 0};
+                static const int ddc[4] = {0, 0, -1, 1};
+                while (!q.empty() && dist[gr][gc] < 0) {
+                    auto [cr, cc] = q.front();
+                    q.pop_front();
+                    for (int k = 0; k < 4; ++k) {
+                        const int nr = cr + ddr[k];
+                        const int nc = cc + ddc[k];
+                        if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                        if (static_obstacle[nr][nc]) continue;
+                        if (dist[nr][nc] >= 0) continue;
+                        dist[nr][nc] = dist[cr][cc] + 1;
+                        q.emplace_back(nr, nc);
+                    }
+                }
+                if (dist[gr][gc] < 0) continue;
+                // Backtrack one shortest path from goal -> start.
+                int cr = gr, cc = gc;
+                while (!(cr == sr && cc == sc)) {
+                    for (int b = 0; b < N && n_active <= 6; ++b) {
+                        if (!active[b] && agent_cells[b].first == cr
+                            && agent_cells[b].second == cc) {
+                            active[b] = true;
+                            ++n_active;
+                        }
+                    }
+                    bool stepped = false;
+                    for (int k = 0; k < 4; ++k) {
+                        const int nr = cr + ddr[k];
+                        const int nc = cc + ddc[k];
+                        if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                        if (dist[nr][nc] == dist[cr][cc] - 1) {
+                            cr = nr; cc = nc;
+                            stepped = true;
+                            break;
+                        }
+                    }
+                    if (!stepped) break;  // disconnected — bail
+                }
+            }
+        }
+        if (jv) std::cerr << "[v2:cagj] REDUCED N=" << N
+                          << " N_active=" << n_active << "\n";
+        // Effective branching guard: cap N_active so 5^N_active stays
+        // tractable. 5^6 = 15625 successors per node is the practical edge.
+        if (n_active < 1 || n_active > 6) {
+            if (jv) std::cerr << "[v2:cagj] reject N_active=" << n_active << "\n";
+            return false;
+        }
+    }
 
     const int R = level_.rows;
     const int C = level_.cols;
@@ -1227,6 +1372,11 @@ bool Solver::complete_agent_goals_joint()
         const int gr = targets[a].first;
         const int gc = targets[a].second;
         if (gr < 0 || gr >= R || gc < 0 || gc >= C || obstacle[gr][gc]) {
+            // In reduced mode, inactive agents are already at goal so their
+            // target is not actually blocked. Only fail for active agents.
+            if (active_agent_reduction && !active[a]) continue;
+            if (jv) std::cerr << "[v2:cagj] reject: agent " << a
+                              << " target blocked or oob (" << gr << "," << gc << ")\n";
             return false;  // agent's own goal is unreachable
         }
         dist_to_target[a][gr][gc] = 0;
@@ -1249,7 +1399,13 @@ bool Solver::complete_agent_goals_joint()
         }
         const int sr = state_.agent_rows[a];
         const int sc = state_.agent_cols[a];
-        if (dist_to_target[a][sr][sc] == kInf) return false;
+        if (dist_to_target[a][sr][sc] == kInf) {
+            if (active_agent_reduction && !active[a]) continue;
+            if (jv) std::cerr << "[v2:cagj] reject: agent " << a
+                              << " unreachable to (" << gr << "," << gc
+                              << ") from (" << sr << "," << sc << ")\n";
+            return false;
+        }
     }
 
     auto pos_of = [&](int r, int c) { return r * C + c; };
@@ -1280,6 +1436,7 @@ bool Solver::complete_agent_goals_joint()
         int h = 0;
         for (int a = 0; a < N; ++a) {
             if (targets[a].first < 0) continue;
+            if (active_agent_reduction && !active[a]) continue;
             const int r = pos[a] / C, c = pos[a] % C;
             const int d = dist_to_target[a][r][c];
             if (d == kInf) return kInf;
@@ -1291,6 +1448,8 @@ bool Solver::complete_agent_goals_joint()
     auto is_goal = [&](const std::vector<int>& pos) {
         for (int a = 0; a < N; ++a) {
             if (targets[a].first < 0) continue;
+            // Inactive agent already at goal (verified in mask computation);
+            // still cheap to assert.
             if (pos[a] != pos_of(targets[a].first, targets[a].second)) return false;
         }
         return true;
@@ -1301,8 +1460,13 @@ bool Solver::complete_agent_goals_joint()
         start_pos[a] = pos_of(state_.agent_rows[a], state_.agent_cols[a]);
     }
     const int h0 = h_of(start_pos);
-    if (h0 == kInf) return false;
-    nodes.push_back({start_pos, std::vector<int>(N, 0), -1, 0, h0});
+    if (h0 == kInf) {
+        if (jv) std::cerr << "[v2:cagj] reject: h0=inf\n";
+        return false;
+    }
+    if (jv) std::cerr << "[v2:cagj] start search h0=" << h0 << "\n";
+    const int w_h0 = active_agent_reduction ? (5 * h0) : h0;
+    nodes.push_back({start_pos, std::vector<int>(N, 0), -1, 0, w_h0});
 
     auto cmp = [&nodes](int lhs, int rhs) {
         if (nodes[lhs].f != nodes[rhs].f) return nodes[lhs].f > nodes[rhs].f;
@@ -1320,10 +1484,15 @@ bool Solver::complete_agent_goals_joint()
     static const int kDc[5]  = {0, 0, 0, 1, -1};
 
     constexpr int kExpansionCap = 200000;
+    // Reduced mode: higher cap because branching is bounded by 5^N_active.
+    const int expansion_cap = active_agent_reduction ? 600000 : kExpansionCap;
     int expansions = 0;
 
-    while (!open.empty() && expansions < kExpansionCap) {
-        if ((expansions & 1023) == 0 && variant_time_up()) return false;
+    while (!open.empty() && expansions < expansion_cap) {
+        if ((expansions & 1023) == 0 && variant_time_up()) {
+            if (jv) std::cerr << "[v2:cagj] time up at expansions=" << expansions << "\n";
+            return false;
+        }
         const int idx = open.top();
         open.pop();
         // Copy: nodes may reallocate inside the successor loop.
@@ -1354,10 +1523,11 @@ bool Solver::complete_agent_goals_joint()
         }
         ++expansions;
 
-        // Enumerate all joint actions (5^N). For each agent, the per-cell
-        // delta is precomputed; combinations with vertex/edge conflicts or
-        // out-of-bounds destinations are skipped early. Pure-NoOp transition
-        // is excluded (would loop forever).
+        // Enumerate all joint actions (5^N_active in reduced mode, 5^N
+        // otherwise). For each agent, the per-cell delta is precomputed;
+        // combinations with vertex/edge conflicts or out-of-bounds
+        // destinations are skipped early. Pure-NoOp transition is excluded
+        // (would loop forever).
         std::vector<int> jact(N, 0);
         std::function<void(int)> rec = [&](int ai) {
             if (ai == N) {
@@ -1396,8 +1566,21 @@ bool Solver::complete_agent_goals_joint()
                 const int h = h_of(new_pos);
                 if (h == kInf) return;
                 best_g[nkey] = ng;
-                nodes.push_back({new_pos, joint_full, idx, ng, ng + h});
+                // Weighted A* in reduced mode: heuristic is loose (BFS over
+                // walls+boxes only, ignores agent positions), so admissible
+                // A* expands too widely with N_active=5..6. W=5 trades
+                // optimality for solvability — we only need any feasible
+                // joint final-positioning plan, not the shortest one.
+                const int w_h = active_agent_reduction ? (5 * h) : h;
+                nodes.push_back({new_pos, joint_full, idx, ng, ng + w_h});
                 open.push(static_cast<int>(nodes.size()) - 1);
+                return;
+            }
+            // Inactive agents only emit NoOp in reduced mode → branching
+            // collapses to 5^N_active.
+            if (active_agent_reduction && !active[ai]) {
+                jact[ai] = 0;
+                rec(ai + 1);
                 return;
             }
             for (int a = 0; a < 5; ++a) {
@@ -1407,6 +1590,8 @@ bool Solver::complete_agent_goals_joint()
         };
         rec(0);
     }
+    if (jv) std::cerr << "[v2:cagj] search exhausted expansions=" << expansions
+                      << " open.empty=" << (open.empty() ? 1 : 0) << "\n";
     return false;
 }
 
@@ -1438,39 +1623,476 @@ bool Solver::complete_agent_goals_joint()
 //
 // On success: plan_ is populated with the joint-action sequence; state_ is
 // the goal state. On failure both are reset to initial values by the caller.
-bool Solver::solve_joint_full()
+// =============================================================================
+// solve_joint_full_from_current() — bounded full joint A* from current state
+// =============================================================================
+//
+// Bounded joint-state A* used as a last-resort fallback. Searches forward
+// from `state_` (the current state, which may be the initial state or a
+// partial-progress snapshot restored by the caller). On success, APPENDS
+// the joint-action sequence to `plan_`. On failure restores state_ and
+// plan_ to their values at entry. Uses State::applicable / conflicting /
+// apply_joint semantics so the resulting plan is server-valid by
+// construction.
+//
+// Eligibility (any failure → false, no work done):
+//   - 1 ≤ N ≤ 4 agents
+//   - Mismatched-letter-box count and reachable-cell count gated by N:
+//       N==1..3: mismatched ≤ 10, cells ≤ 200, total ≤ 18
+//       N==4:    mismatched ≤  8, cells ≤ 260, total ≤ 14
+//   - At least 2 seconds of overall-budget remaining.
+//
+// Heuristic (admissible under joint-step cost):
+//   h(s) = max( for each letter-goal cell g: min over same-letter boxes of
+//                walls-only distance(box, g),
+//               for each agent-goal cell g_a: walls-only distance(agent, g_a) )
+// This is a valid lower bound on the remaining makespan because each goal
+// must be reached and a single joint step advances any one goal by at most 1.
+//
+// Caps:
+//   - 80 000 node expansions
+//   - `budget_seconds` wall-clock budget (also bounded by overall_deadline_)
+bool Solver::solve_joint_full_from_current(int  budget_seconds,
+                                           bool prune_satisfied_boxes,
+                                           int  heuristic_weight,
+                                           bool active_agent_reduction,
+                                           bool force_divisor_bound)
 {
-    const int N = static_cast<int>(initial_state_.agent_rows.size());
-    if (N <= 0 || N > 4) return false;
+    const bool jv = env_flag_enabled("V2_VERBOSE");
+    const int N = static_cast<int>(state_.agent_rows.size());
+    // Hard upper bound on total N: even with active reduction we still encode
+    // every agent in the state and iterate per-agent for action lists; very
+    // large N (e.g., 20) bloats both memory and per-node work.
+    constexpr int kAbsMaxN = 16;
+    if (N <= 0 || N > kAbsMaxN) {
+        if (jv) std::cerr << "[v2:jaf] reject N=" << N
+                          << " (abs cap " << kAbsMaxN << ")\n";
+        return false;
+    }
+    if (!active_agent_reduction && N > 6) {
+        if (jv) std::cerr << "[v2:jaf] reject N=" << N
+                          << " (no active reduction)\n";
+        return false;
+    }
 
-    int box_count = 0;
+    // Active-agent mask (size N). With reduction OFF, every agent is active
+    // and behaviour is identical to the legacy path.
+    std::vector<bool> active(N, true);
+    int n_active = N;
+    if (active_agent_reduction) {
+        active = compute_active_agent_mask(state_);
+        n_active = 0;
+        for (bool a : active) if (a) ++n_active;
+        if (n_active == 0) {
+            // Nothing for active set to do — check if we are at goal already.
+            if (state_.goal_state()) {
+                if (jv) std::cerr << "[v2:jaf] reduced: already at goal\n";
+                return true;
+            }
+            // Unsatisfied-but-no-active-agent means a goal asks for a colour
+            // no agent on the board can move. Reject.
+            if (jv) std::cerr << "[v2:jaf] reduced: n_active=0 but not goal\n";
+            return false;
+        }
+        // Trim active set to at most 6 agents when the loose color-mask
+        // over-activates. Strategy: keep agents with own numeric goal
+        // first (they MUST move); fill remaining slots with closest agents
+        // (walls-only BFS distance) to any unsatisfied letter goal or
+        // same-letter unmatched box of matching color. Eliminates the
+        // "same-color sea" failure mode (Apdo-class) where every agent on
+        // the board gets activated even though only a few are needed.
+        constexpr int kActiveCap = 6;
+        if (n_active > kActiveCap) {
+            std::vector<bool> must_move(N, false);
+            for (int r = 0; r < level_.rows; ++r) {
+                for (int c = 0; c < level_.cols; ++c) {
+                    const char g = level_.goals[r][c];
+                    if (g < '0' || g > '9') continue;
+                    const int ai = g - '0';
+                    if (ai >= N) continue;
+                    if (state_.agent_rows[ai] != r || state_.agent_cols[ai] != c) {
+                        must_move[ai] = true;
+                    }
+                }
+            }
+            // Multi-source BFS over walls-only from every unsatisfied
+            // letter goal + same-letter unmatched box; computes min
+            // distance from each cell to nearest residual seed.
+            const int R = level_.rows, C = level_.cols;
+            std::vector<std::vector<int>> dist(R, std::vector<int>(C, -1));
+            std::deque<std::pair<int,int>> bq;
+            for (int r = 0; r < R; ++r) {
+                for (int c = 0; c < C; ++c) {
+                    if (level_.walls[r][c]) continue;
+                    const char g = level_.goals[r][c];
+                    const char b = state_.boxes[r][c];
+                    bool seed = false;
+                    if (g >= 'A' && g <= 'Z' && state_.boxes[r][c] != g) seed = true;
+                    if (b >= 'A' && b <= 'Z' && level_.goals[r][c] != b) seed = true;
+                    if (seed && dist[r][c] < 0) {
+                        dist[r][c] = 0;
+                        bq.emplace_back(r, c);
+                    }
+                }
+            }
+            static const int ddr[4] = {-1, 1, 0, 0};
+            static const int ddc[4] = {0, 0, -1, 1};
+            while (!bq.empty()) {
+                auto [cr, cc] = bq.front();
+                bq.pop_front();
+                for (int k = 0; k < 4; ++k) {
+                    const int nr = cr + ddr[k];
+                    const int nc = cc + ddc[k];
+                    if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                    if (level_.walls[nr][nc]) continue;
+                    if (dist[nr][nc] >= 0) continue;
+                    dist[nr][nc] = dist[cr][cc] + 1;
+                    bq.emplace_back(nr, nc);
+                }
+            }
+            // Rank candidate active agents by (must_move desc, dist asc).
+            struct Cand { int a; int prio; int d; };
+            std::vector<Cand> cands;
+            cands.reserve(n_active);
+            for (int a = 0; a < N; ++a) {
+                if (!active[a]) continue;
+                const int d = dist[state_.agent_rows[a]][state_.agent_cols[a]];
+                cands.push_back({a, must_move[a] ? 1 : 0,
+                                 d >= 0 ? d : INT_MAX});
+            }
+            std::sort(cands.begin(), cands.end(), [](const Cand& x, const Cand& y) {
+                if (x.prio != y.prio) return x.prio > y.prio;
+                return x.d < y.d;
+            });
+            std::fill(active.begin(), active.end(), false);
+            const int keep = std::min(static_cast<int>(cands.size()), kActiveCap);
+            for (int i = 0; i < keep; ++i) active[cands[i].a] = true;
+            n_active = keep;
+            if (jv) std::cerr << "[v2:jaf] trimmed N_active to " << n_active << "\n";
+        }
+        // Blocker promotion: if N_active is too small (1 or 2), the active
+        // agent(s) may be physically blocked by inactive agents sitting on
+        // the only path to any seed cell (letter goal or unmatched same-letter
+        // box). Search will incorrectly conclude infeasibility because
+        // inactive agents are NoOp-only. Promote blockers by BFS-ing each
+        // active agent toward each seed cell (walls+boxes only) and marking
+        // any inactive agent on the resulting shortest path. Capped at
+        // kActiveCap. Rescues GroupWon/TriSplit-class small-residual snapshots.
+        if (n_active >= 1 && n_active <= 2) {
+            const int R = level_.rows, C = level_.cols;
+            // Collect seed cells: unsatisfied letter goals + unmatched
+            // same-letter boxes of any color that has an active agent.
+            std::vector<int> active_colors;
+            for (int a = 0; a < N; ++a) {
+                if (!active[a]) continue;
+                const int col = level_.agent_color[a];
+                if (col >= 0
+                    && std::find(active_colors.begin(), active_colors.end(),
+                                 col) == active_colors.end()) {
+                    active_colors.push_back(col);
+                }
+            }
+            std::vector<std::pair<int,int>> seeds;
+            for (int r = 0; r < R; ++r) {
+                for (int c = 0; c < C; ++c) {
+                    if (level_.walls[r][c]) continue;
+                    const char g = level_.goals[r][c];
+                    if (g >= 'A' && g <= 'Z' && state_.boxes[r][c] != g) {
+                        const int bc = level_.box_color[g - 'A'];
+                        if (std::find(active_colors.begin(), active_colors.end(),
+                                      bc) != active_colors.end()) {
+                            seeds.emplace_back(r, c);
+                        }
+                    }
+                    const char b = state_.boxes[r][c];
+                    if (b >= 'A' && b <= 'Z' && level_.goals[r][c] != b) {
+                        const int bc = level_.box_color[b - 'A'];
+                        if (std::find(active_colors.begin(), active_colors.end(),
+                                      bc) != active_colors.end()) {
+                            seeds.emplace_back(r, c);
+                        }
+                    }
+                }
+            }
+            // Static obstacle = walls ∪ boxes (agents are treated as
+            // potential blockers we want to discover).
+            std::vector<std::vector<bool>> static_obstacle(R,
+                std::vector<bool>(C, false));
+            for (int r = 0; r < R; ++r) {
+                for (int c = 0; c < C; ++c) {
+                    if (level_.walls[r][c]) static_obstacle[r][c] = true;
+                    else if (state_.boxes[r][c] != '\0') {
+                        static_obstacle[r][c] = true;
+                    }
+                }
+            }
+            std::vector<std::pair<int,int>> agent_cells(N);
+            for (int a = 0; a < N; ++a) {
+                agent_cells[a] = {state_.agent_rows[a], state_.agent_cols[a]};
+            }
+            static const int ddr[4] = {-1, 1, 0, 0};
+            static const int ddc[4] = {0, 0, -1, 1};
+            for (int aa = 0; aa < N && n_active < kActiveCap; ++aa) {
+                if (!active[aa]) continue;
+                const int sr = state_.agent_rows[aa];
+                const int sc = state_.agent_cols[aa];
+                // BFS distances from this active agent.
+                std::vector<std::vector<int>> dist(R, std::vector<int>(C, -1));
+                std::deque<std::pair<int,int>> q;
+                dist[sr][sc] = 0;
+                q.emplace_back(sr, sc);
+                while (!q.empty()) {
+                    auto [cr, cc] = q.front();
+                    q.pop_front();
+                    for (int k = 0; k < 4; ++k) {
+                        const int nr = cr + ddr[k];
+                        const int nc = cc + ddc[k];
+                        if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                        // Allow stepping through agent cells (they're not
+                        // walls/boxes — they'd be the blockers we want).
+                        if (level_.walls[nr][nc]) continue;
+                        if (state_.boxes[nr][nc] != '\0') continue;
+                        if (dist[nr][nc] >= 0) continue;
+                        dist[nr][nc] = dist[cr][cc] + 1;
+                        q.emplace_back(nr, nc);
+                    }
+                }
+                // For each seed, find nearest reachable cell; if reachable,
+                // backtrack one shortest path and mark blockers.
+                for (const auto& seed : seeds) {
+                    if (n_active >= kActiveCap) break;
+                    int best_r = -1, best_c = -1, best_d = INT_MAX;
+                    // The seed itself may be a wall-adjacent or box cell;
+                    // accept ANY adjacent reachable cell.
+                    for (int k = 0; k < 4; ++k) {
+                        const int nr = seed.first + ddr[k];
+                        const int nc = seed.second + ddc[k];
+                        if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                        if (dist[nr][nc] >= 0 && dist[nr][nc] < best_d) {
+                            best_d = dist[nr][nc];
+                            best_r = nr;
+                            best_c = nc;
+                        }
+                    }
+                    if (best_r < 0) continue;
+                    int cr = best_r, cc = best_c;
+                    while (!(cr == sr && cc == sc)) {
+                        for (int b = 0; b < N && n_active < kActiveCap; ++b) {
+                            if (!active[b]
+                                && agent_cells[b].first == cr
+                                && agent_cells[b].second == cc) {
+                                active[b] = true;
+                                ++n_active;
+                            }
+                        }
+                        bool stepped = false;
+                        for (int k = 0; k < 4; ++k) {
+                            const int nr = cr + ddr[k];
+                            const int nc = cc + ddc[k];
+                            if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+                            if (dist[nr][nc] == dist[cr][cc] - 1) {
+                                cr = nr; cc = nc;
+                                stepped = true;
+                                break;
+                            }
+                        }
+                        if (!stepped) break;
+                    }
+                }
+            }
+            if (jv) std::cerr << "[v2:jaf] blocker-promoted to N_active="
+                              << n_active << "\n";
+        }
+        if (jv) std::cerr << "[v2:jaf] reduced mode: N=" << N
+                          << " N_active=" << n_active << "\n";
+    }
+
+    // Count mismatched letter boxes (those NOT sitting on a matching letter
+    // goal) AND total movable boxes from the current state. The mismatched
+    // count drives "is this worth attempting"; the total count guards
+    // against pathological branching when most boxes are satisfied but
+    // dozens of others are still color-compatible and pushable.
+    // Boxes whose color is not shared by any agent on the board are
+    // immovable in practice (decoration / wall-fill). They should not
+    // count toward total_movable or mismatched: they cannot be the
+    // subject of push/pull and a goal cell asking for them is impossible
+    // to satisfy through agent action.
+    std::array<bool, 26> color_has_agent{};
+    for (int a = 0; a < N; ++a) {
+        const int c = level_.agent_color[a];
+        if (c >= 0) {
+            for (int b = 0; b < 26; ++b) {
+                if (level_.box_color[b] == c) color_has_agent[b] = true;
+            }
+        }
+    }
+    int mismatched = 0;
+    int total_movable = 0;
     int cell_count = 0;
     for (int r = 0; r < level_.rows; ++r) {
         for (int c = 0; c < level_.cols; ++c) {
             if (level_.walls[r][c]) continue;
             ++cell_count;
-            const char b = initial_state_.boxes[r][c];
-            if (b >= 'A' && b <= 'Z') ++box_count;
+            const char b = state_.boxes[r][c];
+            if (b < 'A' || b > 'Z') continue;
+            if (level_.box_color[b - 'A'] < 0) continue;
+            if (!color_has_agent[b - 'A']) continue;
+            ++total_movable;
+            if (level_.goals[r][c] != b) ++mismatched;
         }
     }
-    // Tiered eligibility — the search scales worst with agent count, then
-    // box count, then reachable cells. Allow modestly larger problems when
-    // the agent count is small.
-    if (N <= 3) {
-        if (box_count > 10) return false;
-        if (cell_count > 200) return false;
-    } else { // N == 4
-        if (box_count > 8) return false;
-        if (cell_count > 260) return false;
+    // For reduced mode, the more meaningful sizing metric is the cell count
+    // walls-only-reachable from the active sub-problem (component-local).
+    const int residual_cells = active_agent_reduction
+        ? residual_reachable_cells(state_, active)
+        : cell_count;
+
+    if (active_agent_reduction) {
+        // Per-N_active eligibility. Looser caps than the full-mode path
+        // because effective branching is 9^N_active (inactive agents are
+        // NoOp-only). residual_cells (component-local) used for size.
+        // total_movable is NOT capped here: many movable boxes in a large
+        // level are irrelevant to the residual sub-problem and the
+        // applicable-action filter already bounds per-node successor
+        // generation regardless of total box count.
+        bool ok = false;
+        if (n_active <= 3) {
+            ok = (mismatched <= 20 && residual_cells <= 800);
+        } else if (n_active == 4) {
+            ok = (mismatched <= 16 && residual_cells <= 600);
+        } else if (n_active == 5) {
+            ok = (mismatched <= 14 && residual_cells <= 500);
+        } else if (n_active == 6) {
+            ok = (mismatched <= 12 && residual_cells <= 400);
+        }
+        // Positioning-only relax: when all letter goals are satisfied
+        // (mismatched==0), action set collapses to Move/NoOp (Push/Pull
+        // would unsatisfy a box) so branching is bounded by 5^N_active
+        // rather than 9^N_active. Allow larger residual maps in that
+        // regime — rescues MAze-class final-positioning failures with
+        // ~500-cell active sub-region.
+        if (!ok && mismatched == 0) {
+            if      (n_active <= 3) ok = (residual_cells <= 1500);
+            else if (n_active == 4) ok = (residual_cells <= 1000);
+            else if (n_active == 5) ok = (residual_cells <= 800);
+            else if (n_active == 6) ok = (residual_cells <= 600);
+        }
+        // Near-done relax: when the residual has very few mismatched boxes
+        // (≤ 6), most actions reduce to positioning; allow large residual
+        // maps. Rescues WardRush/ClauDOom-class snapshots that get close
+        // to delivery completion but have a large open arena.
+        if (!ok && mismatched <= 6) {
+            if      (n_active <= 3) ok = (residual_cells <= 1200);
+            else if (n_active == 4) ok = (residual_cells <= 900);
+            else if (n_active == 5) ok = (residual_cells <= 750);
+            else if (n_active == 6) ok = (residual_cells <= 650);
+        }
+        if (!ok) {
+            if (jv) std::cerr << "[v2:jaf] reject elig REDUCED N_active=" << n_active
+                              << " mis=" << mismatched
+                              << " residual=" << residual_cells
+                              << " total=" << total_movable << "\n";
+            return false;
+        }
+        if (jv) std::cerr << "[v2:jaf] eligible REDUCED N=" << N
+                          << " N_active=" << n_active
+                          << " mis=" << mismatched
+                          << " residual=" << residual_cells
+                          << " total=" << total_movable
+                          << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+    } else if (N <= 3) {
+        // Three escalating tiers:
+        //   (a) baseline: tight caps on all axes
+        //   (b) "almost done" relax: many boxes but ALL satisfied
+        //   (c) prune-on relax: prune_satisfied_boxes=true means branching
+        //       is bounded by the mismatched count (push/pull on satisfied
+        //       boxes is skipped) — total_movable doesn't drive cost, so
+        //       we admit large box counts when the mismatched set is small.
+        //   (d) low-mis relax: regardless of prune flag, when mismatched
+        //       is small the search frontier is bounded by mismatched-many
+        //       box-transports + N-many agent positionings. Admits large
+        //       total_movable (ZOOM-class redelivery puzzles).
+        bool ok_a = (mismatched <= 12 && cell_count <= 320 && total_movable <= 28);
+        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 50);
+        bool ok_c = (prune_satisfied_boxes
+                     && mismatched <= 18
+                     && cell_count <= 600);
+        bool ok_d = (mismatched <= 14 && cell_count <= 500
+                     && total_movable <= 110);
+        if (!(ok_a || ok_b || ok_c || ok_d)) {
+            if (jv) std::cerr << "[v2:jaf] reject elig N<=3 mis=" << mismatched
+                              << " cells=" << cell_count << " total=" << total_movable
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+            return false;
+        }
+    } else if (N == 4) {
+        bool ok_a = (mismatched <= 10 && cell_count <= 300 && total_movable <= 20);
+        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 35);
+        bool ok_c = (prune_satisfied_boxes
+                     && mismatched <= 14
+                     && cell_count <= 500);
+        bool ok_d = (mismatched <= 10 && cell_count <= 400
+                     && total_movable <= 60);
+        if (!(ok_a || ok_b || ok_c || ok_d)) {
+            if (jv) std::cerr << "[v2:jaf] reject elig N==4 mis=" << mismatched
+                              << " cells=" << cell_count << " total=" << total_movable
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+            return false;
+        }
+    } else if (N == 5) {
+        // Branching factor up to 9^5=59k per node in worst case; in practice
+        // per-agent applicable filter keeps it much lower in tight mazes.
+        // Tight eligibility: keep state space + total work small.
+        bool ok_a = (mismatched <= 10 && cell_count <= 250 && total_movable <= 14);
+        // Positioning-only: when mis==0, branching is bounded by 5^N=3125
+        // (Move/NoOp only) so we can admit larger maps + more boxes.
+        bool ok_b = (mismatched == 0 && cell_count <= 900 && total_movable <= 30);
+        bool ok_c = (prune_satisfied_boxes
+                     && mismatched <= 8
+                     && cell_count <= 400);
+        if (!(ok_a || ok_b || ok_c)) {
+            if (jv) std::cerr << "[v2:jaf] reject elig N==5 mis=" << mismatched
+                              << " cells=" << cell_count << " total=" << total_movable
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+            return false;
+        }
+    } else {  // N == 6
+        // Even tighter: 9^6=531k per node worst-case branching.
+        bool ok_a = (mismatched <= 8 && cell_count <= 200 && total_movable <= 10);
+        bool ok_b = (mismatched == 0 && cell_count <= 700 && total_movable <= 25);
+        bool ok_c = (prune_satisfied_boxes
+                     && mismatched <= 6
+                     && cell_count <= 350);
+        if (!(ok_a || ok_b || ok_c)) {
+            if (jv) std::cerr << "[v2:jaf] reject elig N==6 mis=" << mismatched
+                              << " cells=" << cell_count << " total=" << total_movable
+                              << " prune=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
+            return false;
+        }
+    }
+    if (!active_agent_reduction && jv) {
+        std::cerr << "[v2:jaf] eligible N=" << N << " mis=" << mismatched
+                  << " cells=" << cell_count << " total=" << total_movable
+                  << " prune_sat=" << (prune_satisfied_boxes ? 1 : 0) << "\n";
     }
 
     auto now = std::chrono::steady_clock::now();
-    if (now >= overall_deadline_) return false;
+    if (now >= overall_deadline_) {
+        if (jv) std::cerr << "[v2:jaf] reject overall_deadline\n";
+        return false;
+    }
     const auto remaining = overall_deadline_ - now;
-    if (remaining < std::chrono::seconds(2)) return false;
+    if (remaining < std::chrono::seconds(2)) {
+        if (jv) std::cerr << "[v2:jaf] reject remaining<2s\n";
+        return false;
+    }
     const auto local_deadline = std::min(
-        now + std::chrono::seconds(5),
+        now + std::chrono::seconds(std::max(1, budget_seconds)),
         overall_deadline_);
+
+    // Snapshot for full rollback on failure.
+    const State snap_state = state_;
+    const std::size_t snap_plan_len = plan_.size();
 
     // Collect goal cells.
     struct LetterGoal { int r, c; char letter; };
@@ -1524,8 +2146,21 @@ bool Solver::solve_joint_full()
     for (int i = 0; i < n_ag; ++i) bfs_from(n_lg + i, agent_goals[i].r, agent_goals[i].c);
 
     // Heuristic — admissible under joint-step cost (see header comment).
+    // For single-agent levels (N==1) we use a tighter aggregation:
+    //   h(g) = min over same-letter boxes b of
+    //          (max(0, manhattan(agent, b) - 1) + walls_dist(b, g))
+    //   h    = sum over unsatisfied letter goals of h(g)
+    //          + max over unsatisfied position goals (sum is fine too)
+    // The agent-to-box term is admissible because the agent must reach a
+    // cell adjacent to box b before any push/pull of b; manhattan is a
+    // walls-respecting lower bound. The sum-of-goals is admissible in
+    // single-agent because all box transports are necessarily serial.
+    const bool single_agent_h = (N == 1);
+    // Effective agent count for the divisor in the multi-agent heuristic.
+    const int N_eff_h = active_agent_reduction ? n_active : N;
     auto heuristic = [&](const State& s) -> int {
-        int h = 0;
+        int h_max = 0;
+        int h_sum = 0;
         for (int i = 0; i < n_lg; ++i) {
             const auto& lg = letter_goals[i];
             if (s.boxes[lg.r][lg.c] == lg.letter) continue;
@@ -1534,24 +2169,47 @@ bool Solver::solve_joint_full()
                 for (int c = 0; c < level_.cols; ++c) {
                     if (s.boxes[r][c] != lg.letter) continue;
                     const int dv = dist[i][idx(r, c)];
-                    if (dv >= 0 && dv < best) best = dv;
+                    if (dv < 0) continue;
+                    int score = dv;
+                    if (single_agent_h) {
+                        const int dm = std::abs(s.agent_rows[0] - r)
+                                     + std::abs(s.agent_cols[0] - c);
+                        score += std::max(0, dm - 1);
+                    }
+                    if (score < best) best = score;
                 }
             }
             if (best == std::numeric_limits<int>::max()) return std::numeric_limits<int>::max();
-            if (best > h) h = best;
+            if (best > h_max) h_max = best;
+            h_sum += best;
         }
         for (int i = 0; i < n_ag; ++i) {
             const auto& ag = agent_goals[i];
             if (s.agent_rows[ag.agent] == ag.r && s.agent_cols[ag.agent] == ag.c) continue;
             const int dv = dist[n_lg + i][idx(s.agent_rows[ag.agent], s.agent_cols[ag.agent])];
             if (dv < 0) return std::numeric_limits<int>::max();
-            if (dv > h) h = dv;
+            if (dv > h_max) h_max = dv;
+            h_sum += dv;
         }
-        return h;
+        if (single_agent_h) return h_sum;
+        // Multi-agent: gate the admissible divisor bound h_sum/N_eff so it
+        // only fires when h_max is not already a meaningful binding signal.
+        // The rationale: with weighted A* (w=3), tighter admissible h can
+        // reorder the frontier in subtly bad ways when h_max is already
+        // strong (TeamAgent-class, h_max ~= 12). But when h_max is small
+        // relative to N_eff (LoopBots/ZOOM-class, h_max=1 with N>=4 boxes),
+        // h_max gives no guidance and the divisor bound is essential.
+        // Heuristic: trigger when h_max < N_eff_h, OR when force_divisor_bound
+        // is set by the caller (used as a separate fallback pass for levels
+        // where the gated heuristic fails to find a solution).
+        if (force_divisor_bound || h_max < N_eff_h) {
+            const int n_div = std::max(1, N_eff_h);
+            const int h_div = (h_sum + n_div - 1) / n_div;
+            if (h_div > h_max) return h_div;
+        }
+        return h_max;
     };
 
-    // Count how many goal cells the state already satisfies — used as a
-    // tie-breaker (prefer expanding states that are "more solved").
     auto goals_satisfied = [&](const State& s) -> int {
         int c = 0;
         for (const auto& lg : letter_goals) {
@@ -1580,26 +2238,67 @@ bool Solver::solve_joint_full()
 
     std::unordered_map<State, int, StateHash, StateEq> closed_g;
 
-    // Seed.
+    // Weighted A*: f = g + W*h. Find feasible (not necessarily optimal)
+    // plans much faster — this is a fallback layer with a tight wall-time
+    // budget, and we'd rather get *any* working plan than an optimal one
+    // that times out. Caller can override the default weight: higher
+    // values are more greedy-toward-goal (faster but more sub-optimal)
+    // and rescue longer-horizon residuals.
+    const int kHWeight = std::max(1, heuristic_weight);
+    // Expansion cap scales down with N because per-expansion successor
+    // generation is exponentially more costly at higher N. With active
+    // reduction we use N_active (effective branching base) rather than N.
+    const int N_eff = active_agent_reduction ? n_active : N;
+    // Single-agent levels (especially Sokoban-like SAD2/SASolo/SAboXboXboX)
+    // have small per-node successor count but enormous state spaces — the
+    // weak max-of-goal-distances heuristic gives little guidance, so we
+    // need a much larger expansion budget to make progress.
+    const int kNodeCap = (N_eff == 1) ? 1500000
+                       : (N_eff <= 4) ? 250000
+                       : (N_eff == 5) ? 80000
+                                      : 40000;
+    // Hard memory guard: bound generated state count too (per rubber-duck
+    // critique). One pop can produce thousands of successors at N=5/6, so
+    // expansion cap alone doesn't bound memory. Generous for N=6 because
+    // tight box-rearrangement levels (Nej-class) need ≥150k states to
+    // reach the goal — the 80k legacy cap was too small.
+    const std::size_t kNodesMemCap = (N_eff == 1) ? 2000000u
+                                   : (N_eff <= 4) ? 600000u
+                                   : (N_eff == 5) ? 400000u
+                                                  : 350000u;
+    closed_g.reserve(kNodesMemCap);
+
+    // Seed from current state_ (not initial_state_).
     {
         JNode root;
-        root.state = initial_state_;
+        root.state = state_;
         root.g = 0;
         root.h = heuristic(root.state);
-        if (root.h == std::numeric_limits<int>::max()) return false;
+        if (root.h == std::numeric_limits<int>::max()) {
+            if (jv) std::cerr << "[v2:jaf] reject root h=inf (goal unreachable)\n";
+            return false;
+        }
+        if (jv) std::cerr << "[v2:jaf] root h=" << root.h
+                          << " sat=" << goals_satisfied(root.state) << "\n";
         nodes.push_back(std::move(root));
         closed_g.emplace(nodes.back().state, 0);
-        open.emplace(nodes.back().g + nodes.back().h, nodes.back().h,
+        open.emplace(nodes.back().g + kHWeight * nodes.back().h, nodes.back().h,
                      -goals_satisfied(nodes.back().state), 0);
     }
 
     const auto& acts = actions();
     const int A = static_cast<int>(acts.size());
 
-    // Per-agent applicable-action list reused across expansions.
+    // When the snapshot is at a "delivery COMPLETE" state (no mismatched
+    // boxes) we KEEP push/pull allowed but rely on prune_satisfied_boxes
+    // to skip the wasteful disturb-and-recover joint actions. Hard
+    // disabling push/pull caused pacMAn-class to exhaust the search
+    // space because some satisfied boxes legitimately block the only
+    // path to an agent goal and must be temporarily displaced.
+    const bool agent_only_mode = false;
+
     std::vector<std::vector<int>> per_agent(N);
 
-    constexpr int kNodeCap = 80000;
     int expansions = 0;
     int success_idx = -1;
     int budget_check = 0;
@@ -1614,9 +2313,12 @@ bool Solver::solve_joint_full()
             if (std::chrono::steady_clock::now() >= local_deadline) break;
         }
         if (expansions >= kNodeCap) break;
+        if (nodes.size() >= kNodesMemCap) {
+            if (jv) std::cerr << "[v2:jaf] mem cap hit nodes=" << nodes.size() << "\n";
+            break;
+        }
 
-        // Skip outdated open entries (closed_g may have been updated).
-        const JNode cur = nodes[cur_idx];  // copy to avoid invalidation
+        const JNode cur = nodes[cur_idx];
         auto it = closed_g.find(cur.state);
         if (it == closed_g.end() || it->second < cur.g) continue;
 
@@ -1624,21 +2326,56 @@ bool Solver::solve_joint_full()
 
         ++expansions;
 
-        // Enumerate per-agent applicable actions.
         for (int a = 0; a < N; ++a) {
             per_agent[a].clear();
-            for (int k = 0; k < A; ++k) {
-                if (cur.state.applicable(a, acts[k])) per_agent[a].push_back(k);
+            // Inactive agent in reduced mode: only NoOp is allowed. Branching
+            // factor for that agent collapses to 1, so the effective branching
+            // base shrinks from 9^N to 9^N_active.
+            if (active_agent_reduction && !active[a]) {
+                per_agent[a].push_back(0);
+                continue;
             }
-            if (per_agent[a].empty()) per_agent[a].push_back(0);  // NoOp fallback
+            const int ar = cur.state.agent_rows[a];
+            const int ac = cur.state.agent_cols[a];
+            for (int k = 0; k < A; ++k) {
+                const auto& act = acts[k];
+                if (agent_only_mode) {
+                    if (act.type != ActionType::NoOp && act.type != ActionType::Move) continue;
+                }
+                // Sound prune (when prune_satisfied_boxes=true): skip
+                // Push/Pull actions whose target box sits on a matching
+                // letter goal — disturbing such a box forces a re-delivery.
+                // The caller controls this prune so that a second pass
+                // without pruning can rescue levels where the satisfied
+                // box must move (e.g. final-positioning blocker chains).
+                if (prune_satisfied_boxes && act.type == ActionType::Push) {
+                    const int br = ar + act.agent_dr;
+                    const int bc = ac + act.agent_dc;
+                    if (br >= 0 && br < level_.rows && bc >= 0 && bc < level_.cols) {
+                        const char b = cur.state.boxes[br][bc];
+                        if (b >= 'A' && b <= 'Z' && level_.goals[br][bc] == b) continue;
+                    }
+                } else if (prune_satisfied_boxes && act.type == ActionType::Pull) {
+                    const int br = ar - act.box_dr;
+                    const int bc = ac - act.box_dc;
+                    if (br >= 0 && br < level_.rows && bc >= 0 && bc < level_.cols) {
+                        const char b = cur.state.boxes[br][bc];
+                        if (b >= 'A' && b <= 'Z' && level_.goals[br][bc] == b) continue;
+                    }
+                }
+                if (cur.state.applicable(a, act)) per_agent[a].push_back(k);
+            }
+            if (per_agent[a].empty()) per_agent[a].push_back(0);
         }
 
-        // Cartesian product → joint action; filter conflicts; apply.
         std::vector<int> joint(N, 0);
         std::function<void(int)> rec = [&](int ai) {
             if (success_idx >= 0) return;
+            // Memory guard: stop generating successors if we've already
+            // accumulated too many states. Cuts off remaining branches of
+            // this expansion (sound — we just stop exploring further).
+            if (nodes.size() >= kNodesMemCap) return;
             if (ai == N) {
-                // Skip all-NoOp joint actions to avoid infinite loops.
                 bool any = false;
                 for (int v : joint) if (v != 0) { any = true; break; }
                 if (!any) return;
@@ -1659,7 +2396,7 @@ bool Solver::solve_joint_full()
                 nn.h = nh;
                 nn.parent = cur_idx;
                 nn.joint_in = joint;
-                const int nf = ng + nh;
+                const int nf = ng + kHWeight * nh;
                 const int sat = goals_satisfied(nn.state);
                 nodes.push_back(std::move(nn));
                 open.emplace(nf, nh, -sat, static_cast<int>(nodes.size()) - 1);
@@ -1679,7 +2416,17 @@ bool Solver::solve_joint_full()
         if (success_idx >= 0) break;
     }
 
-    if (success_idx < 0) return false;
+    if (success_idx < 0) {
+        if (jv) std::cerr << "[v2:jaf] no solution: expansions=" << expansions
+                          << " nodes=" << nodes.size()
+                          << " open=" << open.size() << "\n";
+        // Rollback (we never mutated state_ or plan_, but explicit anyway).
+        state_ = snap_state;
+        plan_.resize(snap_plan_len);
+        return false;
+    }
+    if (jv) std::cerr << "[v2:jaf] found solution: expansions=" << expansions
+                      << " nodes=" << nodes.size() << "\n";
 
     // Reconstruct joint-action sequence by walking parent pointers.
     std::vector<std::vector<int>> joints;
@@ -1688,24 +2435,235 @@ bool Solver::solve_joint_full()
     }
     std::reverse(joints.begin(), joints.end());
 
-    // Replay from initial_state_ to verify and populate plan_.
-    state_ = initial_state_;
-    plan_.clear();
-    plan_.reserve(joints.size());
+    // Apply joints to state_ starting from the snapshot (which is what
+    // state_ already equals — we never mutated it). On any apply_joint
+    // failure (paranoia), restore.
     for (const auto& j : joints) {
         if (!state_.apply_joint(j)) {
-            state_ = initial_state_;
-            plan_.clear();
+            state_ = snap_state;
+            plan_.resize(snap_plan_len);
             return false;
         }
         plan_.push_back(j);
     }
     if (!state_.goal_state()) {
-        state_ = initial_state_;
-        plan_.clear();
+        state_ = snap_state;
+        plan_.resize(snap_plan_len);
         return false;
     }
     return true;
+}
+
+bool Solver::solve_joint_full()
+{
+    // Backwards-compatible "from scratch" wrapper. Resets to initial then
+    // delegates to the from-current implementation.
+    state_ = initial_state_;
+    plan_.clear();
+    return solve_joint_full_from_current(/*budget_seconds=*/5);
+}
+
+// =============================================================================
+// compute_active_agent_mask — active-agent reduction support
+// =============================================================================
+//
+// An agent is "active" in the current state if it could plausibly need to move
+// to satisfy any remaining goal:
+//   - It has an unsatisfied numeric goal, OR
+//   - Its color matches the color of at least one unsatisfied letter goal,
+//     AND there is at least one same-color unmatched box (or same-letter
+//     unsatisfied goal) in the SAME walls-only connected component as the
+//     agent. The component filter prevents waking distant same-color agents
+//     that cannot possibly reach the residual sub-problem.
+//
+// Used by the reduced joint A* mode to mark unrelated agents as static
+// (NoOp-only). Branching factor drops from 9^N to 9^N_active.
+// =============================================================================
+std::vector<bool> Solver::compute_active_agent_mask(const State& s) const
+{
+    const int N = static_cast<int>(s.agent_rows.size());
+    std::vector<bool> active(N, false);
+
+    // Index agents by component (walls-only).
+    const auto& comp_ids = topology_.component_ids();
+    auto comp_of = [&](int r, int c) -> int {
+        if (r < 0 || r >= level_.rows || c < 0 || c >= level_.cols) return -1;
+        return comp_ids[r][c];
+    };
+
+    // (1) Agent has its own unsatisfied numeric goal.
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            const char g = level_.goals[r][c];
+            if (g < '0' || g > '9') continue;
+            const int ai = g - '0';
+            if (ai >= N) continue;
+            if (s.agent_rows[ai] != r || s.agent_cols[ai] != c) {
+                active[ai] = true;
+            }
+        }
+    }
+
+    // (2) Per-letter: find unsatisfied letter goals and same-color unmatched
+    // boxes. Wake the same-color agents that share a component with at least
+    // one of them.
+    for (char letter = 'A'; letter <= 'Z'; ++letter) {
+        const int color = level_.box_color[letter - 'A'];
+        if (color < 0) continue;
+
+        std::set<int> relevant_comps;
+        bool any_unsatisfied = false;
+        for (int r = 0; r < level_.rows; ++r) {
+            for (int c = 0; c < level_.cols; ++c) {
+                if (level_.goals[r][c] == letter && s.boxes[r][c] != letter) {
+                    const int ci = comp_of(r, c);
+                    if (ci >= 0) relevant_comps.insert(ci);
+                    any_unsatisfied = true;
+                }
+                if (s.boxes[r][c] == letter && level_.goals[r][c] != letter) {
+                    const int ci = comp_of(r, c);
+                    if (ci >= 0) relevant_comps.insert(ci);
+                    // An unmatched same-letter box doesn't by itself need
+                    // delivery (if there's no goal for it), but it might
+                    // serve as a source for some unsatisfied goal — only
+                    // wake agents when any_unsatisfied is also true.
+                }
+            }
+        }
+        if (!any_unsatisfied) continue;
+
+        for (int a = 0; a < N; ++a) {
+            if (active[a]) continue;
+            if (level_.agent_color[a] != color) continue;
+            const int aci = comp_of(s.agent_rows[a], s.agent_cols[a]);
+            if (relevant_comps.count(aci) > 0) active[a] = true;
+        }
+    }
+
+    return active;
+}
+
+// =============================================================================
+// residual_reachable_cells — eligibility-helper for reduced joint A*
+// =============================================================================
+//
+// Cells walls-only-reachable from any "interesting" seed in the current state.
+// Seeds:
+//   - each active agent's cell,
+//   - each unsatisfied letter-goal cell,
+//   - each same-color unmatched box cell (color of any active agent).
+// Component-decomposable levels (AMC, KUTitans) typically have a much smaller
+// residual reachable count than the global cell count, which lets the reduced
+// joint A* fire on residuals that look too big globally.
+// =============================================================================
+int Solver::residual_reachable_cells(const State& s,
+                                     const std::vector<bool>& active) const
+{
+    const int R = level_.rows, C = level_.cols;
+    std::vector<std::vector<char>> seen(R, std::vector<char>(C, 0));
+    std::deque<std::pair<int,int>> q;
+
+    auto push_seed = [&](int r, int c) {
+        if (r < 0 || r >= R || c < 0 || c >= C) return;
+        if (level_.walls[r][c]) return;
+        if (seen[r][c]) return;
+        seen[r][c] = 1;
+        q.emplace_back(r, c);
+    };
+
+    // Active agent positions.
+    for (int a = 0; a < static_cast<int>(s.agent_rows.size()); ++a) {
+        if (a < static_cast<int>(active.size()) && active[a]) {
+            push_seed(s.agent_rows[a], s.agent_cols[a]);
+        }
+    }
+
+    // Unsatisfied letter goals and same-color unmatched boxes.
+    std::array<bool, 26> color_active{};
+    for (int a = 0; a < static_cast<int>(s.agent_rows.size()); ++a) {
+        if (a < static_cast<int>(active.size()) && active[a]) {
+            const int col = level_.agent_color[a];
+            if (col >= 0) {
+                for (int b = 0; b < 26; ++b) {
+                    if (level_.box_color[b] == col) color_active[b] = true;
+                }
+            }
+        }
+    }
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            const char g = level_.goals[r][c];
+            if (g >= 'A' && g <= 'Z' && s.boxes[r][c] != g) {
+                if (color_active[g - 'A']) push_seed(r, c);
+            }
+            const char b = s.boxes[r][c];
+            if (b >= 'A' && b <= 'Z' && level_.goals[r][c] != b) {
+                if (color_active[b - 'A']) push_seed(r, c);
+            }
+        }
+    }
+
+    static const int DR[4] = {-1, 1, 0, 0};
+    static const int DC[4] = { 0, 0,-1, 1};
+    int count = 0;
+    while (!q.empty()) {
+        auto [r, c] = q.front();
+        q.pop_front();
+        ++count;
+        for (int k = 0; k < 4; ++k) {
+            const int nr = r + DR[k], nc = c + DC[k];
+            if (nr < 0 || nr >= R || nc < 0 || nc >= C) continue;
+            if (level_.walls[nr][nc]) continue;
+            if (seen[nr][nc]) continue;
+            seen[nr][nc] = 1;
+            q.emplace_back(nr, nc);
+        }
+    }
+    return count;
+}
+
+int Solver::letter_goals_satisfied(const State& s) const
+{
+    int n = 0;
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            const char g = level_.goals[r][c];
+            if (g >= 'A' && g <= 'Z' && s.boxes[r][c] == g) ++n;
+        }
+    }
+    return n;
+}
+
+int Solver::agent_goals_satisfied(const State& s) const
+{
+    int n = 0;
+    const int N = static_cast<int>(s.agent_rows.size());
+    for (int r = 0; r < level_.rows; ++r) {
+        for (int c = 0; c < level_.cols; ++c) {
+            const char g = level_.goals[r][c];
+            if (g < '0' || g > '9') continue;
+            const int ai = g - '0';
+            if (ai >= N) continue;
+            if (s.agent_rows[ai] == r && s.agent_cols[ai] == c) ++n;
+        }
+    }
+    return n;
+}
+
+void Solver::update_best_snapshot()
+{
+    BestSnapshot cand;
+    cand.state = state_;
+    cand.plan = plan_;
+    cand.letter_goals_satisfied = letter_goals_satisfied(state_);
+    cand.agent_goals_satisfied  = agent_goals_satisfied(state_);
+    cand.valid = true;
+    if (!best_snapshot_.valid
+        || cand.score() > best_snapshot_.score()
+        || (cand.score() == best_snapshot_.score()
+            && cand.plan.size() < best_snapshot_.plan.size())) {
+        best_snapshot_ = std::move(cand);
+    }
 }
 
 bool Solver::complete_agent_goals_serial()
@@ -2489,6 +3447,7 @@ bool Solver::solve_once(std::vector<Task> tasks)
         if (!complete_agent_goals()) return false;
         return state_.goal_state();
     }
+    const bool verbose = env_flag_enabled("V2_VERBOSE");
 
     std::deque<Task> queue(tasks.begin(), tasks.end());
     const int max_passes = 3;
@@ -2508,12 +3467,14 @@ bool Solver::solve_once(std::vector<Task> tasks)
 
             if (deliver_task(t)) {
                 consecutive_failures = 0;
+                update_best_snapshot();
                 continue;
             }
             // Eager scatter: cheap to attempt and rolls back fully on failure.
             // Many fast-failing tasks just need a single agent off the corridor.
             if (deliver_task_with_scatter(t)) {
                 consecutive_failures = 0;
+                update_best_snapshot();
                 continue;
             }
             // Corridor evacuation: wider radius-1 buffer around BOTH the
@@ -2527,6 +3488,7 @@ bool Solver::solve_once(std::vector<Task> tasks)
                                              t.goal_row, t.goal_col)
                     && deliver_task(t)) {
                     consecutive_failures = 0;
+                    update_best_snapshot();
                     continue;
                 }
                 state_ = snap;
@@ -2539,12 +3501,14 @@ bool Solver::solve_once(std::vector<Task> tasks)
                 // boxes off the path) before giving up.
                 if (deliver_task_with_relocation(t, /*allow_on_goal_blockers=*/false)) {
                     consecutive_failures = 0;
+                    update_best_snapshot();
                     continue;
                 }
                 // Last resort: allow displacing on-goal blockers (they will
                 // be re-queued by the redelivery scan after this loop).
                 if (deliver_task_with_relocation(t, /*allow_on_goal_blockers=*/true)) {
                     consecutive_failures = 0;
+                    update_best_snapshot();
                     continue;
                 }
                 return false;
@@ -2554,7 +3518,11 @@ bool Solver::solve_once(std::vector<Task> tasks)
         return queue.empty();
     };
 
-    if (!run_queue()) return false;
+    if (!run_queue()) {
+        if (verbose) std::cerr << "[v2]   first run_queue failed, plan_len=" << plan_.size() << "\n";
+        return false;
+    }
+    if (verbose) std::cerr << "[v2]   first run_queue OK, plan_len=" << plan_.size() << "\n";
 
     // Redelivery scan: aggressive relocation may have displaced previously
     // delivered (or initially-on-goal) boxes. Scan letter-goal cells; for any
@@ -2604,10 +3572,21 @@ bool Solver::solve_once(std::vector<Task> tasks)
         for (auto& t : redo) queue.push_back(t);
         consecutive_failures = 0;
         ++redelivery_rounds;
-        if (!run_queue()) return false;
+        if (!run_queue()) {
+            if (verbose) std::cerr << "[v2]   redelivery run_queue failed, plan_len=" << plan_.size() << "\n";
+            return false;
+        }
     }
 
-    if (!complete_agent_goals()) return false;
+    if (verbose) std::cerr << "[v2]   delivery COMPLETE, plan_len=" << plan_.size() << ", now agent-positioning\n";
+    // Final pre-positioning snapshot — delivery is fully done, this is the
+    // cleanest state for the last-resort joint A* fallback to launch from.
+    update_best_snapshot();
+    if (!complete_agent_goals()) {
+        if (verbose) std::cerr << "[v2]   complete_agent_goals FAILED, plan_len=" << plan_.size() << "\n";
+        return false;
+    }
+    if (verbose) std::cerr << "[v2]   complete_agent_goals OK, plan_len=" << plan_.size() << "\n";
     return state_.goal_state();
 }
 
@@ -2621,6 +3600,7 @@ std::vector<std::vector<int>> Solver::solve()
         // Safe by construction — falls back to `plan` if verification fails.
         return compact_plan(plan, initial_state_);
     };
+    const bool verbose = env_flag_enabled("V2_VERBOSE");
 
     // Overall solver-wide soft deadline. Leaves a 3s safety margin under the
     // typical 30s server timeout, but big enough that the existing primary
@@ -2631,7 +3611,22 @@ std::vector<std::vector<int>> Solver::solve()
     overall_deadline_ = std::chrono::steady_clock::now()
         + std::chrono::seconds(kOverallBudgetSeconds);
 
+    // Reset best-progress snapshot at the start of each solve() invocation
+    // (the Solver may, in principle, be reused for multiple solves).
+    best_snapshot_ = BestSnapshot{};
+
     auto variants = build_task_variants();
+    if (verbose) {
+        std::cerr << "[v2] variants generated: " << variants.size() << "\n";
+        for (std::size_t i = 0; i < variants.size(); ++i) {
+            std::cerr << "[v2] variant " << i << " tasks=" << variants[i].size() << " :";
+            for (const auto& t : variants[i]) {
+                std::cerr << " " << t.letter << "(" << t.box_row << "," << t.box_col
+                          << ")->(" << t.goal_row << "," << t.goal_col << ")@a" << t.agent;
+            }
+            std::cerr << "\n";
+        }
+    }
     if (variants.empty()) {
         // Either no box tasks at all (pure agent-positioning level), or no
         // feasible matching. Try one empty pass for the agent-only case.
@@ -2644,7 +3639,12 @@ std::vector<std::vector<int>> Solver::solve()
     for (std::size_t i = 0; i < variants.size(); ++i) {
         state_ = initial_state_;
         plan_.clear();
-        if (solve_once(variants[i])) return finalize(plan_);
+        if (verbose) std::cerr << "[v2] trying variant " << i << "\n";
+        if (solve_once(variants[i])) {
+            if (verbose) std::cerr << "[v2] variant " << i << " SOLVED, plan_len=" << plan_.size() << "\n";
+            return finalize(plan_);
+        }
+        if (verbose) std::cerr << "[v2] variant " << i << " failed, plan_len=" << plan_.size() << "\n";
     }
 
     // Post-variant fallback pass: every primary variant failed but we still
@@ -2654,24 +3654,276 @@ std::vector<std::vector<int>> Solver::solve()
     // works, the function returns {} exactly as it would have before.
     if (!overall_time_up()) {
         auto extras = build_extra_variants(variants);
+        if (verbose) std::cerr << "[v2] extras: " << extras.size() << "\n";
         for (std::size_t i = 0; i < extras.size(); ++i) {
             if (overall_time_up()) break;
             state_ = initial_state_;
             plan_.clear();
-            if (solve_once(extras[i])) return finalize(plan_);
+            if (verbose) std::cerr << "[v2] trying extra " << i << "\n";
+            if (solve_once(extras[i])) {
+                if (verbose) std::cerr << "[v2] extra " << i << " SOLVED\n";
+                return finalize(plan_);
+            }
         }
     }
 
-    // Last-resort: full joint A* (agents + boxes) for very small problems.
-    // Only fires when every primary and extra variant has failed AND the
-    // problem is tractable: ≤3 agents, ≤6 movable boxes, ≤120 reachable
-    // cells. The function returns false if eligibility fails or if the
-    // bounded search exhausts. Strictly additive — never regresses a level
-    // that the existing pipeline can already solve.
+    // ---------------------------------------------------------------------
+    // Last-resort fallback layer A: full joint A* (agents + boxes) from
+    // the INITIAL state, for very small problems. Often succeeds for
+    // small N levels where the residual is similar to the full level
+    // (e.g. TeamAgent-class) — in those cases solving from-initial is
+    // faster than restoring a partial-progress snapshot first.
+    //
+    // Eligibility (mismatched/cells/total caps) decides whether the
+    // attempt actually runs, so this is strictly additive: it returns
+    // false quickly when the level is too big.
+    // ---------------------------------------------------------------------
     if (!overall_time_up()) {
         state_ = initial_state_;
         plan_.clear();
-        if (solve_joint_full()) return finalize(plan_);
+        if (verbose) std::cerr << "[v2] trying solve_joint_full (from initial)\n";
+        if (solve_joint_full()) {
+            if (verbose) std::cerr << "[v2] solve_joint_full SOLVED\n";
+            return finalize(plan_);
+        }
+        if (verbose) std::cerr << "[v2] solve_joint_full failed (likely ineligible or out of budget)\n";
+        // For levels where NO variant made progress (letters_satisfied == 0),
+        // best_snapshot_ remains invalid and the snapshot fallbacks below
+        // won't fire — rendering only the W=1 attempt above. Add W=3 and
+        // W=5 weighted passes from initial state to rescue tight
+        // box-stacking puzzles (Nej-class) where the heuristic
+        // underestimates the joint cost and admissible A* exhausts memory
+        // long before the goal.
+        const bool no_progress = !best_snapshot_.valid
+            || best_snapshot_.letter_goals_satisfied == 0;
+        if (no_progress && !overall_time_up()) {
+            state_ = initial_state_;
+            plan_.clear();
+            if (verbose) std::cerr << "[v2] trying solve_joint_full from initial (W=3)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/3)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] solve_joint_full W=3 SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        if (no_progress && !overall_time_up()) {
+            state_ = initial_state_;
+            plan_.clear();
+            if (verbose) std::cerr << "[v2] trying solve_joint_full from initial (W=5)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/5)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] solve_joint_full W=5 SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Last-resort fallback layer B: launch full joint A* from the BEST
+    // partial-progress snapshot captured across all variant attempts.
+    //
+    // Many failing levels (pacMAn-class, EpicfAIl-class) reach a state in
+    // which most letter goals are satisfied but the final residual is too
+    // hard for the serial/PIBT/serial-joint agent-positioning chain. By
+    // restoring the highest-progress snapshot and pointing the bounded
+    // joint A* at the *residual* sub-problem (which is much smaller than
+    // the original level), we can finish what the variants started.
+    //
+    // Two passes: first with satisfied-box pruning for speed/soundness
+    // on clean residuals; second without pruning to rescue levels where
+    // the only path through a corridor must temporarily displace a
+    // satisfied box (pacMAn-class).
+    // ---------------------------------------------------------------------
+    if (!overall_time_up() && best_snapshot_.valid
+        && best_snapshot_.letter_goals_satisfied > 0) {
+        const State snap_state = best_snapshot_.state;
+        const auto  snap_plan  = best_snapshot_.plan;
+        state_ = snap_state;
+        plan_  = snap_plan;
+        if (verbose) {
+            std::cerr << "[v2] trying joint A* from snapshot pass1 (score="
+                      << best_snapshot_.score()
+                      << " letters=" << best_snapshot_.letter_goals_satisfied
+                      << " agents=" << best_snapshot_.agent_goals_satisfied
+                      << " plan_len=" << plan_.size() << ")\n";
+        }
+        if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                          /*prune_satisfied_boxes=*/true)
+            && state_.goal_state()) {
+            if (verbose) std::cerr << "[v2] joint A* pass1 SOLVED\n";
+            return finalize(plan_);
+        }
+        if (!overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass2 (no satisfied-box prune)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/3)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass2 SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass 3: high-weight greedy A* (W=8) for long-horizon residuals
+        // where the heuristic underestimates the true joint cost badly
+        // (h=20+ with branching ~8^4 makes the search hit the node cap
+        // long before reaching the goal at default weight). Higher W
+        // accepts more sub-optimality in exchange for finding *some*
+        // feasible plan.
+        if (!overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass3 (W=8)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/8)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass3 SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass 3b: super-greedy weighted A* (W=15) — last shot for tight
+        // redelivery puzzles (DECrunchy-class) where W=8 still fails. Very
+        // sub-optimal but rescues long-horizon residuals.
+        if (!overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass3b (W=15)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/15)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass3b SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass 3c: divisor-bound heuristic (force max(h_max, h_sum/N) always).
+        // Targets multi-box low-h_max residuals (LoopBots-class) where the
+        // gated heuristic returns just h_max=1 (no guidance) and the search
+        // explodes. The divisor bound provides per-agent average distance
+        // signal that orders the frontier toward the goal more aggressively.
+        // Runs as a separate pass so TeamAgent-class levels (which prefer
+        // plain h_max) keep solving via pass1/2.
+        if (!overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass3c (divisor-bound, W=3)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/3,
+                                              /*active_agent_reduction=*/false,
+                                              /*force_divisor_bound=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass3c SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+        // Pass 3d: divisor-bound heuristic with higher weight (W=8) for
+        // residuals where W=3 still exhausts the budget.
+        if (!overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass3d (divisor-bound, W=8)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/4,
+                                              /*prune_satisfied_boxes=*/false,
+                                              /*heuristic_weight=*/8,
+                                              /*active_agent_reduction=*/false,
+                                              /*force_divisor_bound=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass3d SOLVED\n";
+                return finalize(plan_);
+            }
+        }
+
+        // Pass 4 & 5: active-agent-reduced joint A*. Lifts the N ≤ 6 cap
+        // so levels with many agents but only a few "active" ones
+        // (component-local + color-relevant) can be solved through the
+        // joint-A* fallback. Only fires when reduction would actually
+        // help: legacy N ≤ 6 path runs first via the prior 3 passes, so
+        // these passes are strictly additive.
+        const int N_total = static_cast<int>(snap_state.agent_rows.size());
+        if (N_total > 6 && !overall_time_up()) {
+            state_ = snap_state;
+            plan_  = snap_plan;
+            if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass4 (REDUCED, prune, W=3)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/6,
+                                              /*prune_satisfied_boxes=*/true,
+                                              /*heuristic_weight=*/3,
+                                              /*active_agent_reduction=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] joint A* pass4 (REDUCED) SOLVED\n";
+                return finalize(plan_);
+            }
+            if (!overall_time_up()) {
+                state_ = snap_state;
+                plan_  = snap_plan;
+                if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass5 (REDUCED, no prune, W=5)\n";
+                if (solve_joint_full_from_current(/*budget_seconds=*/6,
+                                                  /*prune_satisfied_boxes=*/false,
+                                                  /*heuristic_weight=*/5,
+                                                  /*active_agent_reduction=*/true)
+                    && state_.goal_state()) {
+                    if (verbose) std::cerr << "[v2] joint A* pass5 (REDUCED) SOLVED\n";
+                    return finalize(plan_);
+                }
+            }
+            // Pass 5b: super-greedy reduced (W=12) for tight residuals
+            // where lower weights still run out of time.
+            if (!overall_time_up()) {
+                state_ = snap_state;
+                plan_  = snap_plan;
+                if (verbose) std::cerr << "[v2] trying joint A* from snapshot pass5b (REDUCED, no prune, W=12)\n";
+                if (solve_joint_full_from_current(/*budget_seconds=*/5,
+                                                  /*prune_satisfied_boxes=*/false,
+                                                  /*heuristic_weight=*/12,
+                                                  /*active_agent_reduction=*/true)
+                    && state_.goal_state()) {
+                    if (verbose) std::cerr << "[v2] joint A* pass5b (REDUCED) SOLVED\n";
+                    return finalize(plan_);
+                }
+            }
+        }
+        if (verbose) std::cerr << "[v2] joint A* from snapshot failed (all passes)\n";
+    }
+
+    // Final fallback: reduced joint A* from the INITIAL state for levels
+    // where no variant produced a useful snapshot but a small "active"
+    // sub-problem exists (e.g. some N > 6 levels where most agents have
+    // no goals at all). Only fires for N > 6 (legacy `solve_joint_full`
+    // from-initial already ran for N ≤ 6).
+    if (!overall_time_up()
+        && static_cast<int>(initial_state_.agent_rows.size()) > 6) {
+        state_ = initial_state_;
+        plan_.clear();
+        if (verbose) std::cerr << "[v2] trying solve_joint_full_from_current (REDUCED, from initial)\n";
+        if (solve_joint_full_from_current(/*budget_seconds=*/10,
+                                          /*prune_satisfied_boxes=*/true,
+                                          /*heuristic_weight=*/3,
+                                          /*active_agent_reduction=*/true)
+            && state_.goal_state()) {
+            if (verbose) std::cerr << "[v2] reduced joint A* (from initial) SOLVED\n";
+            return finalize(plan_);
+        }
+        // Second pass with higher weight for tight residuals where W=3
+        // still expands too slowly.
+        if (!overall_time_up()) {
+            state_ = initial_state_;
+            plan_.clear();
+            if (verbose) std::cerr << "[v2] trying solve_joint_full_from_current (REDUCED, from initial, W=8)\n";
+            if (solve_joint_full_from_current(/*budget_seconds=*/8,
+                                              /*prune_satisfied_boxes=*/true,
+                                              /*heuristic_weight=*/8,
+                                              /*active_agent_reduction=*/true)
+                && state_.goal_state()) {
+                if (verbose) std::cerr << "[v2] reduced joint A* (from initial, W=8) SOLVED\n";
+                return finalize(plan_);
+            }
+        }
     }
 
     return {};

@@ -132,7 +132,13 @@ private:
     // NoOp per agent); a node cap and per-call deadline keep this from
     // exploding on bigger levels. Returns false (and rolls back state/plan)
     // on failure. Emits real multi-agent joint actions.
-    bool complete_agent_goals_joint();
+    //
+    // `active_agent_reduction`: when true, treat agents whose own goal is
+    // already satisfied (or who have no goal) as "static" (NoOp-only). This
+    // unlocks N > 6 cases where only a handful of agents actually need to
+    // reposition at the end (CphAirprt-class). The total N is still capped
+    // (≤ 16) but eligibility is gauged on N_active.
+    bool complete_agent_goals_joint(bool active_agent_reduction = false);
     void clear_paths_to_agent_goals();    // relocate boxes blocking agent goal paths
     std::vector<std::pair<int, int>> agent_goal_targets() const;
     std::set<std::pair<int, int>> agent_goal_cells() const;
@@ -158,13 +164,73 @@ private:
     std::vector<std::vector<Task>> build_extra_variants(
         const std::vector<std::vector<Task>>& already_tried);
 
-    // Last-resort full joint A* (agents + boxes) used only when ALL primary
-    // and extra variants have failed AND the level is small (≤3 agents,
-    // ≤6 boxes, ≤120 reachable cells). Uses State::apply_joint / conflicting
-    // for action semantics, a makespan-style admissible heuristic, and a
-    // strict node/time cap. On success rebuilds plan_ from initial_state_
-    // by replaying the joint-action sequence. Returns true on success.
+    // Bounded full joint A* (agents + boxes) used as a last-resort fallback.
+    // Searches forward from `state_` (the *current* state, which may be the
+    // initial state or a partial-progress snapshot restored by the caller)
+    // and, on success, APPENDS the joint-action sequence to `plan_`.
+    // Eligibility is gauged on the START state's mismatched-box count, total
+    // movable boxes, and reachable cell count — only viable for small
+    // residual sub-problems. Returns true on success, leaving state_ at the
+    // goal state and plan_ extended; on failure restores state_ and plan_
+    // to their values at call entry. Strictly additive — never regresses a
+    // level that the existing pipeline can already solve.
+    //
+    // When `active_agent_reduction` is true:
+    //   - Computes an "active" mask: agent active iff
+    //       (own goal unsatisfied) OR
+    //       (color matches color of any unsatisfied letter goal AND in
+    //        same walls-only component as that goal or a same-letter
+    //        unmatched box).
+    //   - Inactive agents only emit NoOp in the per-agent action list.
+    //   - Eligibility uses N_active and residual reachable-cell count
+    //     (cells reachable walls-only from active agents + relevant
+    //     boxes/goals), with looser caps because branching = 9^N_active.
+    //   - This unlocks levels where N_total > 6 but N_active ≤ 4.
+    bool solve_joint_full_from_current(int  budget_seconds            = 5,
+                                       bool prune_satisfied_boxes     = true,
+                                       int  heuristic_weight          = 3,
+                                       bool active_agent_reduction    = false,
+                                       bool force_divisor_bound       = false);
+
+    // Convenience wrapper: reset state_ to initial, clear plan_, then run
+    // solve_joint_full_from_current. Kept for backwards-compatibility of
+    // the original "from scratch" fallback path; the new partial-state
+    // fallback in solve() uses solve_joint_full_from_current directly.
     bool solve_joint_full();
+
+    // Compute the active-agent mask for the current `state_`. Active iff:
+    //   - agent has unsatisfied own numeric goal, OR
+    //   - agent's color matches the color of any unsatisfied letter goal,
+    //     AND the agent shares a walls-only component with at least one
+    //     same-color unmatched box OR same-letter unsatisfied goal.
+    // Output `active.size() == state_.agent_rows.size()`.
+    std::vector<bool> compute_active_agent_mask(const State& s) const;
+
+    // Walls-only reachable cell count from any active agent (or any
+    // unsatisfied goal / unmatched same-color box). Used as a tighter
+    // eligibility metric than the global `cell_count` for reduced
+    // joint A*.
+    int residual_reachable_cells(const State& s,
+                                 const std::vector<bool>& active) const;
+
+    // Best-progress snapshot captured during variant exploration.
+    // Updated at safe transactional boundaries inside solve_once() and used
+    // by solve() as a launchpad for the last-resort joint A* fallback.
+    struct BestSnapshot {
+        State                            state;
+        std::vector<std::vector<int>>    plan;
+        int                              letter_goals_satisfied = 0;
+        int                              agent_goals_satisfied  = 0;
+        bool                             valid                  = false;
+        // Total goals progress (letter-goals weighted higher because each
+        // unblocks delivery of subsequent tasks). Tie-break by shorter plan.
+        int score() const {
+            return letter_goals_satisfied * 1000 + agent_goals_satisfied * 10;
+        }
+    };
+    void update_best_snapshot();
+    int  letter_goals_satisfied(const State& s) const;
+    int  agent_goals_satisfied(const State& s) const;
 
     const Level&                     level_;
     State                            initial_state_;     // snapshot for resets
@@ -172,6 +238,7 @@ private:
     Topology                         topology_;
     SingleBoxAStar                   planner_;
     std::vector<std::vector<int>>    plan_;
+    BestSnapshot                     best_snapshot_;
     std::chrono::steady_clock::time_point variant_deadline_ =
         std::chrono::steady_clock::time_point::max();
     std::chrono::steady_clock::time_point overall_deadline_ =
